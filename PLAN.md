@@ -1,6 +1,6 @@
 # HowMuchAh implementation plan
 
-**Status:** Planning only. The app is not implemented.
+**Status:** First implementation complete; live Firebase setup and release review remain.
 **Date:** 2026-10-22
 
 ## Product scope
@@ -27,7 +27,6 @@ These are practical defaults for the first version and can be revised before imp
 - Use SGD and one group.
 - Attribute a session to the Friday date for monthly billing, even when its Saturday check-in falls in the next month.
 - Apply payments to the oldest valid charges first; excess remains as player credit.
-- Let organisers cancel a week. A cancelled week creates no valid charges.
 - Keep attribution for organiser corrections. Reversing attendance that was already paid creates credit.
 - If the network is unavailable, show a clear failure and do not claim a check-in was saved.
 - Prevent co-organisers from accidentally removing the owner's access.
@@ -37,8 +36,8 @@ These are practical defaults for the first version and can be revised before imp
 - React, TypeScript, and Vite for the client.
 - Firebase Authentication with Google sign-in, Firestore Standard for data, and Firebase Hosting for the static single-page app.
 - Target Firebase Spark free tier; confirm current quotas and required hosting/auth setup before deployment.
-- Use the Firebase client SDK. Firestore security rules enforce all access and time-sensitive writes; hiding UI controls is not security.
-- No custom server or scheduled job is required for check-in windows or monthly summaries. Derive weekly sessions from the schedule and store only records that need persistence, with validated unique session identifiers.
+- Use the Firebase client SDK for sign-in and reads. Firestore security rules enforce the read boundary and deny direct client writes to attendance and financial records. Callable Cloud Functions validate roles, trusted time, fees, and money before making privileged writes.
+- No scheduled job is needed. A callable function derives the current Friday session from trusted server time and the configured IANA time zone.
 - Keep Firebase rules, indexes, and deployment configuration in source control. Use environment placeholders for local runtime configuration. Firebase web config is public and is not a security boundary; never commit service-account credentials, private keys, or user data.
 - Prove security invariants in the Firebase Emulator Suite before relying on the UI.
 - Do not put an external AI service in the product runtime.
@@ -61,11 +60,11 @@ Represent corrections by voiding or correcting the relevant record with who/when
 
 ## Delivery sequence
 
-1. **Foundation:** scaffold the React/TypeScript/Vite app, document local setup, add Firebase configuration placeholders, and establish source-controlled rules and indexes.
-2. **Access and membership:** implement Google sign-in, invite flow, pending/approved membership, organiser roles, owner protection, and emulator-tested rules.
-3. **Sessions and charges:** implement weekly session derivation, check-in/cutoff enforcement, self-undo, organiser corrections/cancellation, guests, and frozen fee snapshots.
-4. **Payments and summaries:** implement monthly bills, manual payment entry and correction, oldest-charge allocation, credit, private player views, and organiser views.
-5. **Release readiness:** complete mobile and keyboard accessibility review, security and concurrency checks, error states, and deployment setup. Keep any demo dataset separate from private group records.
+1. **Foundation:** complete. React/TypeScript/Vite, Firebase placeholders, source-controlled rules, callable functions, and indexes are in place.
+2. **Access and membership:** implemented. Google sign-in, invite links, approval queue, role changes, owner protection, and Firestore emulator rules are in place.
+3. **Sessions and charges:** implemented. Weekly window, self-undo, organiser corrections, guest attendance, and fee snapshots use server time and atomic writes.
+4. **Payments and summaries:** implemented. Members and guests have private ledgers, organisers record/reverse payments, and linked guest history stays on the original records.
+5. **Release readiness:** remains. Configure a real Firebase project and Google provider, bootstrap the owner, review the live deployment settings, and complete the final release review. Keep demo data fictional and separate from group records.
 
 ## Acceptance checks for implementation
 
@@ -75,13 +74,13 @@ Represent corrections by voiding or correcting the relevant record with who/when
 - Server-time boundary checks reject Friday 18:59, allow Friday 19:00 and Saturday 16:59, and reject Saturday 17:00 in Asia/Singapore.
 - A session crossing a calendar-month boundary is billed to Friday's month. Device clock changes and refreshes do not bypass the window.
 - Repeated, retried, and concurrent check-ins create one attendance and one charge. Undo and re-check retain the original session fee even after a rate change.
-- Organiser corrections for late attendance and cancelled weeks leave no orphan valid charge. Correction history identifies the organiser.
+- Organiser corrections for late attendance leave no orphan valid charge. Correction history identifies the organiser.
 - Four sessions at S$2 for Player A total S$8; four at S$5 for Player B total S$20.
 - For S$8 owed, a S$5 payment leaves S$3; a second S$5 payment leaves S$2 credit. Payments spanning months apply oldest charges first. Reversing a paid visit creates credit.
 - Multiple organisers can act concurrently without lost updates or duplicate receipts. Co-organiser actions cannot remove the owner's access.
 - Mobile and keyboard flows show clear saved, pending, and failed states; an uncertain network result is never presented as confirmed.
 
-Run the project type checker, production build, and Firebase Emulator security and behavior checks once the app exists. There is no app to run or validate yet.
+Local verification: `npm run typecheck`, `npm test`, `npm run build`, `npm run test:rules`, and `npm --prefix functions run build`. Callable business flows still need an authenticated Functions Emulator integration pass before release.
 
 ## Explicitly out of scope for v1
 

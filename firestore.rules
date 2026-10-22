@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function memberPath(groupId, uid) {
+      return /databases/$(database)/documents/groups/$(groupId)/members/$(uid);
+    }
+
+    function isApproved(groupId) {
+      return signedIn()
+        && exists(memberPath(groupId, request.auth.uid))
+        && get(memberPath(groupId, request.auth.uid)).data.status == 'approved';
+    }
+
+    function isOrganizer(groupId) {
+      return isApproved(groupId)
+        && get(memberPath(groupId, request.auth.uid)).data.role in ['owner', 'organizer'];
+    }
+
+    function ownsLinkedGuest(groupId) {
+      return resource.data.guestId is string
+        && exists(/databases/$(database)/documents/groups/$(groupId)/guests/$(resource.data.guestId))
+        && get(/databases/$(database)/documents/groups/$(groupId)/guests/$(resource.data.guestId)).data.linkedUid == request.auth.uid;
+    }
+
+    match /groups/{groupId}/settings/{settingId} {
+      allow read: if isApproved(groupId);
+      allow write: if false;
+    }
+
+    match /groups/{groupId}/members/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isOrganizer(groupId)
+        || (isApproved(groupId) && resource.data.status == 'approved'));
+      allow list: if isOrganizer(groupId)
+        || (isApproved(groupId) && resource.data.status == 'approved');
+      allow write: if false;
+
+      match /fees/{feeId} {
+        allow read: if signedIn() && (request.auth.uid == uid || isOrganizer(groupId));
+        allow write: if false;
+      }
+    }
+
+    match /groups/{groupId}/requests/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isOrganizer(groupId));
+      allow list: if isOrganizer(groupId);
+      allow write: if false;
+    }
+
+    match /groups/{groupId}/attendance/{attendanceId} {
+      allow read: if isApproved(groupId);
+      allow write: if false;
+    }
+
+    match /groups/{groupId}/charges/{chargeId} {
+      allow read: if isApproved(groupId)
+        && (isOrganizer(groupId) || resource.data.playerUid == request.auth.uid || ownsLinkedGuest(groupId));
+      allow write: if false;
+    }
+
+    match /groups/{groupId}/payments/{paymentId} {
+      allow read: if isApproved(groupId)
+        && (isOrganizer(groupId) || resource.data.playerUid == request.auth.uid || ownsLinkedGuest(groupId));
+      allow write: if false;
+    }
+
+    match /groups/{groupId}/paymentReversals/{reversalId} {
+      allow read: if isOrganizer(groupId)
+        || (isApproved(groupId) && (resource.data.playerUid == request.auth.uid || ownsLinkedGuest(groupId)));
+      allow write: if false;
+    }
+
+    match /groups/{groupId}/invites/{inviteId} {
+      allow read, write: if false;
+    }
+
+    match /groups/{groupId}/audit/{auditId} {
+      allow read: if isOrganizer(groupId);
+      allow write: if false;
+    }
+
+    match /groups/{groupId}/guests/{guestId} {
+      allow read: if isOrganizer(groupId);
+      allow write: if false;
+
+      match /fees/{feeId} {
+        allow read: if isOrganizer(groupId);
+        allow write: if false;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

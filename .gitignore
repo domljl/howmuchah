@@ -42,3 +42,5 @@ playwright-report/
 
 # OS/editor noise
 .DS_Store
+.impeccable/
+.playwright-mcp/
