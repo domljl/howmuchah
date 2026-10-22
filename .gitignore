@@ -1,0 +1,44 @@
+# Local configuration. Keep only placeholder examples trackable.
+.env
+.env.*
+!.env.example
+.envrc
+
+# Credentials and private material
+credentials/
+secrets/
+private/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+service-account*.json
+*-service-account*.json
+*serviceAccountKey*.json
+*firebase-adminsdk*.json
+serviceAccount*.json
+application_default_credentials.json
+credentials.json
+
+# Local databases, emulator exports, and Firebase cache/logs
+*.db
+*.sqlite
+*.sqlite3
+*-emulator-export*/
+firebase-export*/
+emulator-export*/
+emulator-data/
+*-debug.log
+*-debug.*.log
+.firebase/
+
+# Generated dependencies and build/test output
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+
+# OS/editor noise
+.DS_Store
