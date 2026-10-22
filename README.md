@@ -6,7 +6,7 @@ The first implementation is in place. See [PLAN.md](PLAN.md) for the remaining r
 
 ## Local setup
 
-1. Install Node.js 22 or 24 and Java 21 or newer. Cloud Functions deploy on Node.js 22.
+1. Install Node.js 22 and Java 21 or newer. `.nvmrc` pins the local Node major; run `nvm install` and `nvm use` before installing dependencies. Cloud Functions deploy on Node.js 22.
 2. Run `npm install` and `npm --prefix functions install`.
 3. Copy `.env.example` to `.env.local` and enter the Firebase web app values. Never put service account credentials in the web app or repository.
 4. Run `npm run emulators` in one terminal and `npm run dev` in another.
