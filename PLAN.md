@@ -1,6 +1,6 @@
 # HowMuchAh implementation plan
 
-**Status:** First implementation complete; live Firebase setup and release review remain.
+**Status:** Local implementation complete. VPS PostgreSQL and a private API container are running; Clerk production and Netlify accounts exist. DNS, Google OAuth credentials, frontend deploy, HTTPS routing, and end-to-end release verification remain.
 **Date:** 2026-10-22
 
 ## Product scope
@@ -16,7 +16,8 @@
 - Players may undo their own check-in before the cutoff. After cutoff, only organisers can make corrections. Enforce windows using trusted server time.
 - Create monthly bills and record payments manually. Payments can be partial, cover multiple months, or exceed what is owed and leave credit. No bank integration.
 - Start with zero balances; do not import historical attendance or opening debts.
-- Players can see group attendance, but only their own fees, balance, and payments. Organisers can see all group financial details.
+- Players can see group attendance and each player's paid/unpaid/no-bill status, but only their own fees, balance, and payment history. Organisers can see all group financial details.
+- Show the organiser's PayNow QR code; organisers manually record received payments. Do not attempt bank or QR payment verification.
 - Organisers can add guests by name and fee, and record guest attendance and payments. An organiser can later link an approved Google account to that guest history without losing or duplicating records.
 - Multiple organisers share management access for approvals, fees, attendance, and payments. The owner grants and revokes organiser roles.
 
@@ -34,12 +35,11 @@ These are practical defaults for the first version and can be revised before imp
 ## Proposed stack and boundaries
 
 - React, TypeScript, and Vite for the client.
-- Firebase Authentication with Google sign-in, Firestore Standard for data, and Firebase Hosting for the static single-page app.
-- Target Firebase Spark free tier; confirm current quotas and required hosting/auth setup before deployment.
-- Use the Firebase client SDK for sign-in and reads. Firestore security rules enforce the read boundary and deny direct client writes to attendance and financial records. Callable Cloud Functions validate roles, trusted time, fees, and money before making privileged writes.
-- No scheduled job is needed. A callable function derives the current Friday session from trusted server time and the configured IANA time zone.
-- Keep Firebase rules, indexes, and deployment configuration in source control. Use environment placeholders for local runtime configuration. Firebase web config is public and is not a security boundary; never commit service-account credentials, private keys, or user data.
-- Prove security invariants in the Firebase Emulator Suite before relying on the UI.
+- Clerk Google sign-in, a Fastify API and PostgreSQL on the existing VPS, and Netlify for the static single-page app.
+- The browser sends Clerk session tokens to the API. The API checks roles, trusted time, fees, and money before database writes; PostgreSQL credentials stay on the server.
+- No scheduled job is needed. The API derives the current Friday session from trusted server time and the configured IANA time zone.
+- Keep database and Clerk secrets in server environment variables. The database will stay on the VPS's private Docker network; never commit real player, payment, QR, or credential data.
+- Verify API authorization and finance privacy before launch. The public health endpoint probes PostgreSQL and returns unavailable when the database cannot be reached.
 - Do not put an external AI service in the product runtime.
 
 ## Data and behavior design
@@ -56,15 +56,15 @@ Calculate balances from valid charges and payments instead of storing editable t
 
 Use a stable unique session/player key and atomic writes so retries or concurrent organisers cannot create duplicate check-ins or charges. Freeze the applicable fee for the Friday session, so a Saturday catch-up has the same fee as a Friday check-in. Fee changes take effect on future sessions, not according to the time a player checks in. Organiser-entered attendance for an earlier session since launch uses that session's applicable fee, not the newest fee.
 
-Represent corrections by voiding or correcting the relevant record with who/when attribution. Retrying a payment action must not duplicate a receipt. Correcting a paid attendance must leave the account with the corresponding credit. Never expose fee, charge, payment, or balance fields through documents readable by every player.
+Represent corrections by voiding or correcting the relevant record with who/when attribution. Retrying a payment action must not duplicate a receipt. Correcting a paid attendance must leave the account with the corresponding credit. Never return another player’s fee, charge details, payment history, or balance to a player; group-visible monthly status is limited to paid/unpaid/no bill.
 
 ## Delivery sequence
 
-1. **Foundation:** complete. React/TypeScript/Vite, Firebase placeholders, source-controlled rules, callable functions, and indexes are in place.
-2. **Access and membership:** implemented. Google sign-in, invite links, approval queue, role changes, owner protection, and Firestore emulator rules are in place.
+1. **Foundation:** React/TypeScript/Vite frontend, Clerk auth, PostgreSQL schema, Fastify API, Netlify config, and Docker runtime are in place. VPS PostgreSQL and the API container are running; the API is bound to localhost and its health endpoint successfully queries PostgreSQL. Local typecheck, tests, and production build pass.
+2. **Access and membership:** API supports Google-authenticated invite requests, approvals, role changes, and owner protection; end-to-end live setup remains.
 3. **Sessions and charges:** implemented. Weekly window, self-undo, organiser corrections, guest attendance, and fee snapshots use server time and atomic writes.
-4. **Payments and summaries:** implemented. Members and guests have private ledgers, organisers record/reverse payments, and linked guest history stays on the original records.
-5. **Release readiness:** remains. Configure a real Firebase project and Google provider, bootstrap the owner, review the live deployment settings, and complete the final release review. Keep demo data fictional and separate from group records.
+4. **Payments and summaries:** API supports private ledgers, manual payment recording/reversal, public paid/unpaid statuses, and PayNow QR storage; UI is connected, but live database integration remains unverified.
+5. **Release readiness:** finish Clerk Google sign-in, secrets, DNS and HTTPS routing, deploy the Netlify frontend, then verify authenticated end-to-end flows. Keep demo data fictional and separate from group records.
 
 ## Acceptance checks for implementation
 
@@ -80,7 +80,7 @@ Represent corrections by voiding or correcting the relevant record with who/when
 - Multiple organisers can act concurrently without lost updates or duplicate receipts. Co-organiser actions cannot remove the owner's access.
 - Mobile and keyboard flows show clear saved, pending, and failed states; an uncertain network result is never presented as confirmed.
 
-Local verification: `npm run typecheck`, `npm test`, `npm run build`, `npm run test:rules`, and `npm --prefix functions run build`. Callable business flows still need an authenticated Functions Emulator integration pass before release.
+Local verification: `npm run typecheck`, `npm test`, and `npm run build`. The VPS API health endpoint has been verified against PostgreSQL. Authenticated API/database integration and frontend deployment remain before release.
 
 ## Explicitly out of scope for v1
 
@@ -88,4 +88,4 @@ No bank integration, reminders, shuttle inventory or purchase tracking, advance 
 
 ## Setup decisions still needed before live use
 
-Choose the Firebase project and hosting domain, configure Google sign-in and invite handling, and establish the initial owner through a controlled bootstrap process. A first visitor must never become an organiser automatically. Keep test/demo data separate from real group data; portfolio screenshots must use fictional Player A/B examples only.
+Complete DNS and Google OAuth configuration, add production secrets to the VPS environment, and establish the initial owner through the verified-email bootstrap process. The previously created Filess database is not in use. A first visitor must never become an organiser automatically. Keep test/demo data separate from real group data; portfolio screenshots must use fictional Player A/B examples only.

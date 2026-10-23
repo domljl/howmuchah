@@ -1,43 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
-import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut, type User } from "firebase/auth";
-import {
-  collection, collectionGroup, doc, onSnapshot, query, where,
-  type DocumentData, type QuerySnapshot,
-} from "firebase/firestore";
-import { calculateLedger, monthlyDueMinor } from "../functions/src/domain.js";
+import { ClerkProvider, SignInButton, useAuth, useClerk, useUser } from "@clerk/react";
+import { calculateLedger, monthlyDueMinor } from "../shared/domain.js";
 import { DateTime } from "luxon";
-import { auth, callFunction, db, firebaseConfigured } from "./firebase.js";
+import { callFunction, getBootstrap, setTokenProvider } from "./api.js";
 import { formatAmount, parseAmount } from "./money.js";
 
-const groupPath = "groups/main";
-type Member = { id: string; displayName: string; role: "owner" | "organizer" | "player"; status: "approved" | "pending"; linkedGuestId?: string; approvedAt?: { toDate: () => Date } };
-type Guest = { id: string; displayName: string; status: "active" | "linked"; linkedUid?: string };
+type Member = { id: string; displayName: string; role: "owner" | "organizer" | "player"; status: "approved" | "pending" | "removed"; linkedGuestId?: string; approvedAt?: string; paymentStatus?: "none" | "paid" | "unpaid"; sessionsBilled?: number };
+type Guest = { id: string; displayName: string; status: "active" | "linked"; linkedUid?: string; removedAt?: string };
 type Attendance = { id: string; playerUid: string; guestId?: string; displayName: string; sessionDate: string; status: "active" | "void" };
 type Charge = { id: string; playerUid: string; guestId?: string; sessionDate: string; amountMinor: number; status: "active" | "void" };
-type Payment = { id: string; playerUid: string; guestId?: string; amountMinor: number; receivedAt: { toDate: () => Date }; note?: string };
-type Reversal = { id: string; playerUid: string; guestId?: string; paymentUid: string; amountMinor: number; reversedAt: { toDate: () => Date } };
+type Payment = { id: string; playerUid: string; guestId?: string; amountMinor: number; receivedAt: string; note?: string };
+type Reversal = { id: string; playerUid: string; guestId?: string; paymentUid: string; amountMinor: number; reversedAt: string };
 type Fee = { id: string; playerUid: string; amountMinor: number; effectiveFrom: string };
-type Settings = { timeZone?: string; currency?: string; launchSessionDate?: string };
-type SessionInfo = {
-  configured: boolean;
-  sessionDate?: string;
-  currentDate?: string;
-  isOpen?: boolean;
-  opensAt?: string;
-  closesAt?: string;
-  timeZone?: string;
-  currency?: string;
-};
+type Settings = { timeZone?: string; currency?: string; launchSessionDate?: string; paymentQrDataUrl?: string };
+type SessionInfo = { configured: boolean; sessionDate?: string; currentDate?: string; isOpen?: boolean; opensAt?: string; closesAt?: string; timeZone?: string; currency?: string };
+type PaymentStatus = { id: string; displayName: string; isGuest: boolean; paymentStatus: "none" | "paid" | "unpaid" };
+type Dashboard = { member: Member | null; settings?: Settings | null; session?: SessionInfo; attendance?: Attendance[]; monthAttendance?: Attendance[]; charges?: Charge[]; linkedCharges?: Charge[]; payments?: Payment[]; linkedPayments?: Payment[]; myFees?: Fee[]; reversals?: Reversal[]; linkedReversals?: Reversal[]; members?: Member[]; paymentStatuses?: PaymentStatus[]; requests?: Member[]; allCharges?: Charge[]; allPayments?: Payment[]; allReversals?: Reversal[]; fees?: Fee[]; guests?: Guest[] };
 type Tab = "home" | "sessions" | "bill" | "manage";
 
-function items<T>(snapshot: QuerySnapshot<DocumentData>): T[] {
-  return snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as T);
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message.replace(/^FirebaseError:\s*/i, "") : "Something went wrong. Please try again.";
-}
-
+function messageOf(error: unknown): string { return error instanceof Error ? error.message : "Something went wrong. Please try again."; }
 async function paymentRequest(target: string, amountMinor: number, note: string) {
   const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${target}\n${amountMinor}\n${note}`)));
   const storageKey = `howmuchah-payment-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
@@ -45,7 +26,6 @@ async function paymentRequest(target: string, amountMinor: number, note: string)
   if (!requestId) { requestId = crypto.randomUUID(); sessionStorage.setItem(storageKey, requestId); }
   return { storageKey, requestId };
 }
-
 function dateLabel(date: string, timeZone?: string) {
   if (!timeZone) return date;
   const localDate = DateTime.fromISO(date, { zone: timeZone }).set({ hour: 12 });
@@ -53,192 +33,72 @@ function dateLabel(date: string, timeZone?: string) {
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [member, setMember] = useState<Member | null>(null);
-  const [memberReady, setMemberReady] = useState(false);
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [session, setSession] = useState<SessionInfo | null>(null);
-  const [attendance, setAttendance] = useState<Attendance[]>([]);
-  const [monthAttendance, setMonthAttendance] = useState<Attendance[]>([]);
-  const [charges, setCharges] = useState<Charge[]>([]);
-  const [linkedCharges, setLinkedCharges] = useState<Charge[]>([]);
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [linkedPayments, setLinkedPayments] = useState<Payment[]>([]);
-  const [myFees, setMyFees] = useState<Fee[]>([]);
-  const [reversals, setReversals] = useState<Reversal[]>([]);
-  const [linkedReversals, setLinkedReversals] = useState<Reversal[]>([]);
-  const [members, setMembers] = useState<Member[]>([]);
-  const [guests, setGuests] = useState<Guest[]>([]);
-  const [requests, setRequests] = useState<Member[]>([]);
-  const [allCharges, setAllCharges] = useState<Charge[]>([]);
-  const [allPayments, setAllPayments] = useState<Payment[]>([]);
-  const [allReversals, setAllReversals] = useState<Reversal[]>([]);
-  const [fees, setFees] = useState<Fee[]>([]);
+  const key = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+  return key ? <ClerkProvider publishableKey={key}><SignedInApp /></ClerkProvider> : <SetupPage />;
+}
+
+function SignedInApp() {
+  const { isLoaded, isSignedIn, getToken } = useAuth();
+  const { user } = useUser();
+  const { signOut } = useClerk();
+  const [data, setData] = useState<Dashboard | null>(null);
   const [tab, setTab] = useState<Tab>("home");
-  const [sessionReady, setSessionReady] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-
+  useEffect(() => { setTokenProvider(getToken); }, [getToken]);
   useEffect(() => {
-    if (!auth) { setAuthReady(true); return; }
-    return onAuthStateChanged(auth, (next) => { setUser(next); setAuthReady(true); });
-  }, []);
-
-  useEffect(() => {
-    if (!db || !user) { setMember(null); setMemberReady(Boolean(user === null)); return; }
-    setMemberReady(false);
-    return onSnapshot(doc(db, `${groupPath}/members/${user.uid}`), (snapshot) => {
-      setMember(snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as Member) : null);
-      setMemberReady(true);
-    }, (cause) => { setError(messageOf(cause)); setMemberReady(true); });
-  }, [user]);
-
-  useEffect(() => {
-    if (!user || member?.status !== "approved") { setSession(null); setSessionReady(true); return; }
+    if (!isSignedIn) { setData(null); return; }
     let active = true;
-    const refresh = async () => {
-      try {
-        const next = await callFunction<SessionInfo>("getSessionInfo");
-        if (active) setSession(next);
-      } catch (cause) { if (active) setError(messageOf(cause)); }
-      finally { if (active) setSessionReady(true); }
-    };
-    setSessionReady(false);
+    const refresh = async () => { try { const next = await getBootstrap<Dashboard>(); if (active) { setData(next); setError(""); } } catch (cause) { if (active) setError(messageOf(cause)); } };
     void refresh();
-    const interval = window.setInterval(refresh, 60_000);
-    return () => { active = false; window.clearInterval(interval); };
-  }, [user, member?.status]);
-
-  useEffect(() => {
-    if (!db || !user || member?.status !== "approved") {
-      setSettings(null); setAttendance([]); setCharges([]); setPayments([]); setReversals([]);
-      setLinkedCharges([]); setLinkedPayments([]); setLinkedReversals([]);
-      setMonthAttendance([]); setMyFees([]); setMembers([]); setRequests([]); setAllCharges([]); setAllPayments([]); setAllReversals([]); setFees([]); setGuests([]);
-      return;
-    }
-    setLinkedCharges([]); setLinkedPayments([]); setLinkedReversals([]);
-    const unsubs = [
-      onSnapshot(doc(db, `${groupPath}/settings/public`), (snap) => setSettings(snap.exists() ? snap.data() as Settings : null), (cause) => setError(messageOf(cause))),
-      onSnapshot(collection(db, `${groupPath}/members/${user.uid}/fees`), (snap) => setMyFees(items<Fee>(snap).sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))), (cause) => setError(messageOf(cause))),
-      onSnapshot(query(collection(db, `${groupPath}/members`), where("status", "==", "approved")), (snap) => setMembers(items<Member>(snap)), (cause) => setError(messageOf(cause))),
-      onSnapshot(query(collection(db, `${groupPath}/charges`), where("playerUid", "==", user.uid)), (snap) => setCharges(items<Charge>(snap)), (cause) => setError(messageOf(cause))),
-      onSnapshot(query(collection(db, `${groupPath}/payments`), where("playerUid", "==", user.uid)), (snap) => setPayments(items<Payment>(snap)), (cause) => setError(messageOf(cause))),
-      onSnapshot(query(collection(db, `${groupPath}/paymentReversals`), where("playerUid", "==", user.uid)), (snap) => setReversals(items<Reversal>(snap)), (cause) => setError(messageOf(cause))),
-    ];
-    if (session?.sessionDate) {
-      unsubs.push(onSnapshot(query(collection(db, `${groupPath}/attendance`), where("sessionDate", "==", session.sessionDate)), (snap) => setAttendance(items<Attendance>(snap)), (cause) => setError(messageOf(cause))));
-    }
-    if (session?.currentDate) {
-      const monthStart = `${session.currentDate.slice(0, 7)}-01`;
-      const nextMonth = DateTime.fromISO(monthStart, { zone: session.timeZone }).plus({ months: 1 }).toISODate()!;
-      unsubs.push(onSnapshot(query(collection(db, `${groupPath}/attendance`), where("sessionDate", ">=", monthStart), where("sessionDate", "<", nextMonth)), (snap) => setMonthAttendance(items<Attendance>(snap)), (cause) => setError(messageOf(cause))));
-    }
-    if (member.role === "owner" || member.role === "organizer") {
-      unsubs.push(
-        onSnapshot(collection(db, `${groupPath}/guests`), (snap) => setGuests(items<Guest>(snap)), (cause) => setError(messageOf(cause))),
-        onSnapshot(collection(db, `${groupPath}/requests`), (snap) => setRequests(items<Member>(snap)), (cause) => setError(messageOf(cause))),
-        onSnapshot(collection(db, `${groupPath}/charges`), (snap) => setAllCharges(items<Charge>(snap)), (cause) => setError(messageOf(cause))),
-        onSnapshot(collection(db, `${groupPath}/payments`), (snap) => setAllPayments(items<Payment>(snap)), (cause) => setError(messageOf(cause))),
-        onSnapshot(collection(db, `${groupPath}/paymentReversals`), (snap) => setAllReversals(items<Reversal>(snap)), (cause) => setError(messageOf(cause))),
-        onSnapshot(collectionGroup(db, "fees"), (snap) => setFees(snap.docs.map((entry) => ({
-          id: entry.id,
-          playerUid: entry.ref.parent.parent?.id ?? "",
-          ...entry.data(),
-        }) as Fee)), (cause) => setError(messageOf(cause))),
-      );
-    }
-    if (member.linkedGuestId) {
-      const guestFilter = where("guestId", "==", member.linkedGuestId);
-      unsubs.push(
-        onSnapshot(query(collection(db, `${groupPath}/charges`), guestFilter), (snap) => setLinkedCharges(items<Charge>(snap)), (cause) => setError(messageOf(cause))),
-        onSnapshot(query(collection(db, `${groupPath}/payments`), guestFilter), (snap) => setLinkedPayments(items<Payment>(snap)), (cause) => setError(messageOf(cause))),
-        onSnapshot(query(collection(db, `${groupPath}/paymentReversals`), guestFilter), (snap) => setLinkedReversals(items<Reversal>(snap)), (cause) => setError(messageOf(cause))),
-      );
-    }
-    return () => unsubs.forEach((unsubscribe) => unsubscribe());
-  }, [user, member?.status, member?.role, member?.linkedGuestId, session?.sessionDate]);
-
+    const timer = window.setInterval(refresh, 20_000);
+    window.addEventListener("howmuchah:refresh", refresh);
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener("howmuchah:refresh", refresh); };
+  }, [isSignedIn]);
+  const member = data?.member ?? null;
   useEffect(() => {
     const code = new URLSearchParams(window.location.search).get("invite");
-    if (!user || member || !code) return;
-    void callFunction<{ status: string }>("joinWithInvite", { code }).then(() => {
-      window.history.replaceState({}, "", window.location.pathname);
-      setNotice("Your request is with the organisers.");
-    }).catch((cause) => setError(messageOf(cause)));
-  }, [user, member]);
-
+    if (!isSignedIn || !user || member || !code) return;
+    void callFunction<{ status: string }>("joinWithInvite", { code }).then(() => { window.history.replaceState({}, "", window.location.pathname); setNotice("Your request is with the organisers."); }).catch((cause) => setError(messageOf(cause)));
+  }, [isSignedIn, user, member]);
   const ledger = useMemo(() => calculateLedger(
-    [...charges, ...linkedCharges].map((item) => ({ ...item, sessionDate: item.sessionDate, amountMinor: item.amountMinor })),
-    [...payments, ...linkedPayments].map((item) => ({ id: item.id, amountMinor: item.amountMinor, receivedAt: item.receivedAt.toDate().toISOString() })),
-    [...reversals, ...linkedReversals].map((item) => item.paymentUid),
-  ), [charges, linkedCharges, payments, linkedPayments, reversals, linkedReversals]);
+    [...(data?.charges ?? []), ...(data?.linkedCharges ?? [])],
+    [...(data?.payments ?? []), ...(data?.linkedPayments ?? [])].map((item) => ({ id: item.id, amountMinor: item.amountMinor, receivedAt: item.receivedAt })),
+    [...(data?.reversals ?? []), ...(data?.linkedReversals ?? [])].map((item) => item.paymentUid),
+  ), [data]);
   const isOrganizer = member?.role === "owner" || member?.role === "organizer";
-
-  if (!firebaseConfigured) return <SetupPage />;
-  if (!authReady) return <LoadingPage label="Connecting securely…" />;
-  if (!user) return <SignIn error={error} onSignIn={() => void signInWithPopup(auth!, new GoogleAuthProvider()).catch((cause) => setError(messageOf(cause)))} />;
-  if (!memberReady) return <LoadingPage label="Loading your group access…" />;
-  if (member?.status === "pending") return <PendingPage name={member.displayName} notice={notice} onSignOut={() => void signOut(auth!)} />;
-  if (!member) return <JoinPage error={error} onJoin={(code) => void callFunction("joinWithInvite", { code }).then(() => { setError(""); setNotice("Your request is with the organisers."); }).catch((cause) => setError(messageOf(cause)))} onSignOut={() => void signOut(auth!)} />;
-
-  const currency = settings?.currency ?? session?.currency;
-  const actions = {
-    error: (value: string) => setError(value),
-    notice: (value: string) => setNotice(value),
-    clear: () => { setError(""); setNotice(""); },
-  };
-
-  return (
-    <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="#home" onClick={(event) => { event.preventDefault(); setTab("home"); }}>HowMuchAh<span className="brand-dot">.</span></a>
-        <div className="account"><span className="account-name">{member.displayName}</span><button className="text-button" onClick={() => void signOut(auth!)}>Sign out</button></div>
-      </header>
-      <main className="page-content">
-        <div className="page-heading"><div><p className="eyebrow">SCHOOL BADMINTON GROUP</p><h1>{tab === "home" ? "Your session" : tab === "bill" ? "Your bill" : tab === "sessions" ? "Sessions" : "Manage group"}</h1></div></div>
-        {error && <div className="alert alert-error" role="alert">{error}<button aria-label="Dismiss" onClick={() => setError("")}><CloseIcon /></button></div>}
-        {notice && <div className="alert alert-success" role="status">{notice}<button aria-label="Dismiss" onClick={() => setNotice("")}><CloseIcon /></button></div>}
-        {tab === "home" && <HomePage
-          session={session} sessionReady={sessionReady} member={member}
-          attendance={attendance} ledger={ledger} currency={currency}
-          fee={myFees.filter((item) => !session?.sessionDate || item.effectiveFrom <= session.sessionDate).at(-1)}
-          onCheckIn={async (undo) => {
-            actions.clear();
-            try {
-              await callFunction(undo ? "undoCheckIn" : "checkIn");
-              actions.notice(undo ? "Your check-in was undone." : "You’re checked in for this session.");
-            } catch (cause) { actions.error(messageOf(cause)); }
-          }}
-        />}
-        {tab === "bill" && <BillPage ledger={ledger} currency={currency} payments={[...payments, ...linkedPayments]} reversals={[...reversals, ...linkedReversals]} />}
-        {tab === "sessions" && <SessionsPage attendance={monthAttendance} members={members} currentDate={session?.currentDate} sessionDate={session?.sessionDate} isOpen={session?.isOpen} timeZone={session?.timeZone} launchDate={settings?.launchSessionDate} />}
-        {tab === "manage" && isOrganizer && <ManagePage
-          actor={member} settings={settings} session={session} members={members} requests={requests}
-          charges={allCharges} payments={allPayments} reversals={allReversals} fees={fees} guests={guests}
-          actions={actions}
-        />}
-      </main>
-      <nav className="bottom-nav" aria-label="Main navigation">
-        <NavButton active={tab === "home"} icon="home" onClick={() => setTab("home")}>Home</NavButton>
-        <NavButton active={tab === "sessions"} icon="sessions" onClick={() => setTab("sessions")}>Sessions</NavButton>
-        <NavButton active={tab === "bill"} icon="bill" onClick={() => setTab("bill")}>My bill</NavButton>
-        {isOrganizer && <NavButton active={tab === "manage"} icon="manage" onClick={() => setTab("manage")}>Manage</NavButton>}
-      </nav>
-    </div>
-  );
+  if (!isLoaded) return <LoadingPage label="Connecting securely…" />;
+  if (!isSignedIn) return <SignIn error={error} />;
+  if (!data) return <LoadingPage label="Loading your group access…" error={error} onSignOut={() => void signOut()} />;
+  if (member?.status === "pending") return <PendingPage name={member.displayName} notice={notice} onSignOut={() => void signOut()} />;
+  if (member?.status === "removed") return <LoadingPage label="Your access to this group has been removed." onSignOut={() => void signOut()} />;
+  if (!member) return <JoinPage error={error} onJoin={(code) => void callFunction("joinWithInvite", { code }).then(() => { setNotice("Your request is with the organisers."); }).catch((cause) => setError(messageOf(cause)))} onSignOut={() => void signOut()} />;
+  const settings = data.settings ?? null;
+  const session: SessionInfo = data.session ?? { configured: false };
+  const currency = settings?.currency ?? session.currency;
+  const actions = { error: (value: string) => setError(value), notice: (value: string) => setNotice(value), clear: () => { setError(""); setNotice(""); } };
+  return <div className="app-shell">
+    <header className="topbar"><a className="brand" href="#home" onClick={(event) => { event.preventDefault(); setTab("home"); }}>HowMuchAh<span className="brand-dot">.</span></a><div className="account"><span className="account-name">{member.displayName}</span><button className="text-button" onClick={() => void signOut()}>Sign out</button></div></header>
+    <main className="page-content"><div className="page-heading"><div><p className="eyebrow">SCHOOL BADMINTON GROUP</p><h1>{tab === "home" ? "Your session" : tab === "bill" ? "Your bill" : tab === "sessions" ? "Sessions" : "Manage group"}</h1></div></div>
+      {error && <div className="alert alert-error" role="alert">{error}<button aria-label="Dismiss" onClick={() => setError("")}><CloseIcon /></button></div>}{notice && <div className="alert alert-success" role="status">{notice}<button aria-label="Dismiss" onClick={() => setNotice("")}><CloseIcon /></button></div>}
+      {tab === "home" && <HomePage session={session} sessionReady member={member} attendance={data.attendance ?? []} ledger={ledger} currency={currency} fee={(data.myFees ?? []).filter((item) => !session.sessionDate || item.effectiveFrom <= session.sessionDate).at(-1)} paymentStatuses={data.paymentStatuses ?? []} onCheckIn={async (undo) => { actions.clear(); try { await callFunction(undo ? "undoCheckIn" : "checkIn"); actions.notice(undo ? "Your check-in was undone." : "You’re checked in for this session."); } catch (cause) { actions.error(messageOf(cause)); } }} />}
+      {tab === "bill" && <BillPage ledger={ledger} currency={currency} payments={[...(data.payments ?? []), ...(data.linkedPayments ?? [])]} reversals={[...(data.reversals ?? []), ...(data.linkedReversals ?? [])]} qr={settings?.paymentQrDataUrl} />}
+      {tab === "sessions" && <SessionsPage attendance={data.monthAttendance ?? []} members={data.members ?? []} currentDate={session.currentDate} sessionDate={session.sessionDate} isOpen={session.isOpen} timeZone={session.timeZone} launchDate={settings?.launchSessionDate} />}
+      {tab === "manage" && isOrganizer && <ManagePage actor={member} settings={settings} session={session} members={data.members ?? []} requests={data.requests ?? []} charges={data.allCharges ?? []} payments={data.allPayments ?? []} reversals={data.allReversals ?? []} fees={data.fees ?? []} guests={data.guests ?? []} actions={actions} />}
+    </main><nav className="bottom-nav" aria-label="Main navigation"><NavButton active={tab === "home"} icon="home" onClick={() => setTab("home")}>Home</NavButton><NavButton active={tab === "sessions"} icon="sessions" onClick={() => setTab("sessions")}>Sessions</NavButton><NavButton active={tab === "bill"} icon="bill" onClick={() => setTab("bill")}>My bill</NavButton>{isOrganizer && <NavButton active={tab === "manage"} icon="manage" onClick={() => setTab("manage")}>Manage</NavButton>}</nav>
+  </div>;
 }
 
 function SetupPage() {
-  return <main className="center-page"><span className="brand">HowMuchAh<span className="brand-dot">.</span></span><section className="plain-card"><p className="eyebrow">LOCAL SETUP</p><h1>Connect a Firebase project</h1><p>Copy <code>.env.example</code> to <code>.env.local</code>, add your Firebase web app settings, then start the local emulators.</p><p>The checked-in project ID is reserved for local testing. No account or group data is connected yet.</p></section></main>;
+  return <main className="center-page"><span className="brand">HowMuchAh<span className="brand-dot">.</span></span><section className="plain-card"><p className="eyebrow">LOCAL SETUP</p><h1>Connect your sign-in</h1><p>Copy <code>.env.example</code> to <code>.env.local</code> and add your Clerk publishable key. Start the API with <code>npm run api:dev</code>.</p><p>Keep your Clerk secret key and database URL in the API environment only.</p></section></main>;
 }
 
-function LoadingPage({ label }: { label: string }) {
-  return <main className="center-page" aria-live="polite"><span className="brand">HowMuchAh<span className="brand-dot">.</span></span><p className="muted">{label}</p></main>;
+function LoadingPage({ label, error, onSignOut }: { label: string; error?: string; onSignOut?: () => void }) {
+  return <main className="center-page" aria-live="polite"><span className="brand">HowMuchAh<span className="brand-dot">.</span></span><p className="muted">{error || label}</p>{error && onSignOut && <button className="secondary-button" onClick={onSignOut}>Sign out</button>}</main>;
 }
 
-function SignIn({ error, onSignIn }: { error: string; onSignIn: () => void }) {
-  return <main className="center-page"><span className="brand">HowMuchAh<span className="brand-dot">.</span></span><section className="plain-card"><p className="eyebrow">FRIDAY BADMINTON</p><h1>Keep the game simple.</h1><p className="muted">Check in for the session and keep track of your own shuttle contribution.</p><button className="primary-button" onClick={onSignIn}>Continue with Google</button>{error && <p className="form-error" role="alert">{error}</p>}</section></main>;
+function SignIn({ error }: { error: string }) {
+  return <main className="center-page"><span className="brand">HowMuchAh<span className="brand-dot">.</span></span><section className="plain-card"><p className="eyebrow">FRIDAY BADMINTON</p><h1>Keep the game simple.</h1><p className="muted">Check in for the session and keep track of your own shuttle contribution.</p><SignInButton mode="modal"><button className="primary-button">Continue with Google</button></SignInButton>{error && <p className="form-error" role="alert">{error}</p>}</section></main>;
 }
 
 function PendingPage({ name, notice, onSignOut }: { name: string; notice: string; onSignOut: () => void }) {
@@ -250,10 +110,11 @@ function JoinPage({ error, onJoin, onSignOut }: { error: string; onJoin: (code: 
   return <main className="center-page"><span className="brand">HowMuchAh<span className="brand-dot">.</span></span><form className="plain-card" onSubmit={(event) => { event.preventDefault(); onJoin(code.trim()); }}><p className="eyebrow">PRIVATE GROUP</p><h1>Join your badminton group</h1><p className="muted">Enter the invite code from an organiser. You won’t see group information until your request is approved.</p><label>Invite code<input value={code} onChange={(event) => setCode(event.target.value)} autoComplete="off" required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary-button" disabled={!code.trim()}>Request access</button><button type="button" className="text-button signout-link" onClick={onSignOut}>Sign out</button></form></main>;
 }
 
-function HomePage({ session, sessionReady, member, attendance, ledger, currency, fee, onCheckIn }: {
+function HomePage({ session, sessionReady, member, attendance, ledger, currency, fee, paymentStatuses, onCheckIn }: {
   session: SessionInfo | null; sessionReady: boolean; member: Member;
   attendance: Attendance[]; ledger: ReturnType<typeof calculateLedger>; currency?: string;
   fee?: Fee;
+  paymentStatuses: PaymentStatus[];
   onCheckIn: (undo: boolean) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
@@ -285,12 +146,13 @@ function HomePage({ session, sessionReady, member, attendance, ledger, currency,
       <div className="section-heading"><div><p className="eyebrow">FRIDAY SESSION</p><h2>Who’s coming</h2></div><span className="count-pill">{totalComing} {totalComing === 1 ? "player" : "players"}</span></div>
       {attendance.filter((entry) => entry.status === "active").sort((a, b) => a.displayName.localeCompare(b.displayName)).map((entry) => <div className="player-row" key={entry.id}><span className="presence-dot" aria-hidden="true" />{entry.displayName}<span className="row-note">Checked in</span></div>)}
       {totalComing === 0 && <p className="empty-state">No one has checked in yet. You can be first.</p>}
-      <p className="privacy-note">Attendance is shared with the group. Fees and payments are private.</p>
+      <p className="privacy-note">Attendance and monthly payment status are shared with the group. Fee amounts are private.</p>
     </section>
+    <section className="plain-card month-card"><div className="section-heading"><div><p className="eyebrow">THIS MONTH</p><h2>Payment status</h2></div></div>{paymentStatuses.map((person) => <div className="player-row" key={person.id}><span>{person.displayName}{person.isGuest && <small className="muted"> guest</small>}</span><span className="row-note">{person.paymentStatus === "none" ? "No bill" : person.paymentStatus === "paid" ? "Paid" : "Unpaid"}</span></div>)}</section>
   </div>;
 }
 
-function BillPage({ ledger, currency, payments, reversals }: { ledger: ReturnType<typeof calculateLedger>; currency?: string; payments: Payment[]; reversals: Reversal[] }) {
+function BillPage({ ledger, currency, payments, reversals, qr }: { ledger: ReturnType<typeof calculateLedger>; currency?: string; payments: Payment[]; reversals: Reversal[]; qr?: string }) {
   const byMonth = new Map<string, typeof ledger.charges>();
   for (const charge of ledger.charges) {
     const key = charge.sessionDate.slice(0, 7);
@@ -300,7 +162,8 @@ function BillPage({ ledger, currency, payments, reversals }: { ledger: ReturnTyp
   return <div className="dashboard-stack">
     <section className="balance-card large-balance"><div><p className="eyebrow">CURRENT BALANCE</p><h2>{currency ? (ledger.balanceMinor < 0 ? `${formatAmount(ledger.creditMinor, currency)} credit` : formatAmount(ledger.amountDueMinor, currency)) : "Set up required"}</h2><p className="muted">Based on your attended sessions and recorded payments.</p></div></section>
     {[...byMonth.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([month, entries]) => <section className="plain-card month-card" key={month}><div className="section-heading"><h2>{monthTitle(month)}</h2><span className="muted">{entries.length} session{entries.length === 1 ? "" : "s"}</span></div>{entries.map((entry) => <div className="money-row" key={entry.id}><span>{dateLabel(entry.sessionDate, "UTC")}</span><strong>{currency ? formatAmount(entry.amountMinor, currency) : "—"}</strong></div>)}</section>)}
-    <section className="plain-card month-card"><h2>Payments received</h2>{payments.length ? [...payments].sort((a, b) => b.receivedAt.toDate().getTime() - a.receivedAt.toDate().getTime()).map((payment) => <div className="money-row" key={payment.id}><span>{payment.receivedAt.toDate().toLocaleDateString()}{reversals.some((reversal) => reversal.paymentUid === payment.id) && <small className="muted">Reversed</small>}</span><strong>{currency ? formatAmount(payment.amountMinor, currency) : "—"}</strong></div>) : <p className="empty-state">No payments recorded yet.</p>}</section>
+    {qr && <section className="plain-card month-card"><h2>PayNow</h2><p className="muted">Scan to pay. Your organiser will update your payment status after receiving it.</p><img className="paynow-qr" src={qr} alt="Group PayNow QR code" /></section>}
+    <section className="plain-card month-card"><h2>Payments received</h2>{payments.length ? [...payments].sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()).map((payment) => <div className="money-row" key={payment.id}><span>{new Date(payment.receivedAt).toLocaleDateString()}{reversals.some((reversal) => reversal.paymentUid === payment.id) && <small className="muted">Reversed</small>}</span><strong>{currency ? formatAmount(payment.amountMinor, currency) : "—"}</strong></div>) : <p className="empty-state">No payments recorded yet.</p>}</section>
   </div>;
 }
 
@@ -323,7 +186,7 @@ function SessionsPage({ attendance, members, currentDate, sessionDate, isOpen, t
     return <section className="plain-card month-card" key={date}><div className="section-heading"><h2>{dateLabel(date, timeZone)}</h2><span className="count-pill">{attended.length} attended</span></div>{upcoming && <p className="muted">This session has not opened yet.</p>}{members.slice().sort((a, b) => a.displayName.localeCompare(b.displayName)).map((person) => {
       const linkedGuestPresent = Boolean(person.linkedGuestId && attended.some((entry) => entry.guestId === person.linkedGuestId));
       const attendedSession = present.has(person.id) || linkedGuestPresent;
-      const joinedDate = person.approvedAt ? DateTime.fromJSDate(person.approvedAt.toDate(), { zone: timeZone }).toISODate() : undefined;
+      const joinedDate = person.approvedAt ? DateTime.fromISO(person.approvedAt, { zone: timeZone }).toISODate() : undefined;
       const joinedLater = !attendedSession && joinedDate && date < joinedDate;
       return <div className="player-row" key={person.id}><span className={`presence-dot ${attendedSession ? "" : "presence-away"}`} aria-hidden="true" />{person.displayName}<span className="row-note">{upcoming ? "Not yet" : attendedSession ? "Checked in" : joinedLater ? "Joined later" : "Not checked in"}</span></div>;
     })}{guestAttendees.map((guest) => <div className="player-row" key={guest.id}><span className="presence-dot" aria-hidden="true" />{guest.displayName}<span className="row-note">Guest · checked in</span></div>)}{members.length === 0 && guestAttendees.length === 0 && <p className="empty-state">No players in this group yet.</p>}</section>;
@@ -349,36 +212,40 @@ function ManagePage({ actor, settings, session, members, requests, charges, paym
   charges: Charge[]; payments: Payment[]; reversals: Reversal[]; fees: Fee[]; guests: Guest[];
   actions: { error: (value: string) => void; notice: (value: string) => void; clear: () => void };
 }) {
-  const [inviteUrl, setInviteUrl] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const action = async (work: () => Promise<unknown>, success: string) => {
     actions.clear();
     try { await work(); actions.notice(success); return true; } catch (cause) { actions.error(messageOf(cause)); return false; }
   };
+  const [qrBusy, setQrBusy] = useState(false);
   const activePayments = payments.filter((payment) => !reversals.some((reversal) => reversal.paymentUid === payment.id));
   const groupBalances = members.map((person) => {
     const guestId = person.linkedGuestId;
     const personReversals = reversals.filter((reversal) => reversal.playerUid === person.id || reversal.guestId === guestId).map((reversal) => reversal.paymentUid);
     const ledger = calculateLedger(
       charges.filter((charge) => charge.playerUid === person.id || charge.guestId === guestId),
-      payments.filter((payment) => payment.playerUid === person.id || payment.guestId === guestId).map((payment) => ({ id: payment.id, amountMinor: payment.amountMinor, receivedAt: payment.receivedAt.toDate().toISOString() })),
+      payments.filter((payment) => payment.playerUid === person.id || payment.guestId === guestId).map((payment) => ({ id: payment.id, amountMinor: payment.amountMinor, receivedAt: payment.receivedAt })),
       personReversals,
     );
     return { person, ledger };
   });
-  const unlinkedGuests = guests.filter((guest) => guest.status === "active");
-  const guestBalances = unlinkedGuests.map((guest) => ({ guest, ledger: calculateLedger(
+  const guestRecords = guests.filter((guest) => guest.status === "active");
+  const unlinkedGuests = guestRecords.filter((guest) => !guest.removedAt);
+  const guestBalances = guestRecords.map((guest) => ({ guest, ledger: calculateLedger(
     charges.filter((charge) => charge.guestId === guest.id),
-    payments.filter((payment) => payment.guestId === guest.id).map((payment) => ({ id: payment.id, amountMinor: payment.amountMinor, receivedAt: payment.receivedAt.toDate().toISOString() })),
+    payments.filter((payment) => payment.guestId === guest.id).map((payment) => ({ id: payment.id, amountMinor: payment.amountMinor, receivedAt: payment.receivedAt })),
     reversals.filter((reversal) => reversal.guestId === guest.id).map((reversal) => reversal.paymentUid),
   ) }));
   return <div className="dashboard-stack manager-stack">
     {actor.role === "owner" && <GroupSettingsForm settings={settings} session={session} onSave={(timeZone, currency) => action(() => callFunction("setGroupSettings", { timeZone, currency }), "Group settings saved.")} />}
-    <InviteCard inviteUrl={inviteUrl} onCreate={() => action(async () => {
+    <section className="plain-card manager-card"><h2>PayNow QR code</h2><p className="muted">Players can scan this from their bill. Use PNG, JPEG, or WebP up to 2 MB.</p>{settings?.paymentQrDataUrl && <img className="paynow-qr" src={settings.paymentQrDataUrl} alt="Current group PayNow QR code" />}<label>Upload QR image<input type="file" accept="image/png,image/jpeg,image/webp" disabled={qrBusy} onChange={async (event) => { const input = event.currentTarget; const file = input.files?.[0]; if (!file) return; if (file.size > 2_000_000) { actions.error("Choose an image under 2 MB."); input.value = ""; return; } setQrBusy(true); try { const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1] ?? ""); reader.onerror = () => reject(new Error("Could not read that image.")); reader.readAsDataURL(file); }); await action(() => callFunction("setPaynowQr", { data, mimeType: file.type }), "PayNow QR updated."); } catch (cause) { actions.error(messageOf(cause)); } finally { setQrBusy(false); input.value = ""; } }} /></label>{settings?.paymentQrDataUrl && <button className="text-button danger-button" onClick={() => void action(() => callFunction("setPaynowQr", { data: null }), "PayNow QR removed.")}>Remove QR code</button>}</section>
+    <InviteCard inviteCode={inviteCode} onCreate={() => action(async () => {
       const result = await callFunction<{ code: string }>("createInvite");
-      const link = new URL(window.location.href); link.search = `?invite=${encodeURIComponent(result.code)}`;
-      setInviteUrl(link.toString());
-      await navigator.clipboard?.writeText(link.toString());
-    }, "Invite link created and copied.")} />
+      setInviteCode(result.code);
+    }, "Invite code created. Send it to your friends.")} onCopy={() => action(async () => {
+      if (!navigator.clipboard) throw new Error("Clipboard unavailable. Select and copy the invite code instead.");
+      await navigator.clipboard.writeText(inviteCode);
+    }, "Invite code copied.")} />
     <section className="plain-card manager-card"><div className="section-heading"><div><p className="eyebrow">ACCESS REQUESTS</p><h2>Waiting for approval</h2></div><span className="count-pill">{requests.length}</span></div>
       {requests.length === 0 ? <p className="empty-state">No one is waiting right now.</p> : requests.map((request) => <ApproveRow key={request.id} request={request} currency={settings?.currency} onError={actions.error} onApprove={(amountMinor) => action(() => callFunction("approveMember", { playerUid: request.id, amountMinor }), `${request.displayName} approved.`)} />)}
     </section>
@@ -386,22 +253,24 @@ function ManagePage({ actor, settings, session, members, requests, charges, paym
       const currentFee = fees.filter((fee) => fee.playerUid === person.id && (!session?.sessionDate || fee.effectiveFrom <= session.sessionDate)).sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
       return <MemberRow key={person.id} member={person} fee={currentFee} currency={settings?.currency} actorRole={actor.role} onError={actions.error}
         onFee={(amountMinor) => action(() => callFunction("updateMemberFee", { playerUid: person.id, amountMinor }), `Fee updated for ${person.displayName}.`)}
-        onRole={(role) => action(() => callFunction("setOrganizerRole", { playerUid: person.id, role }), "Member role updated.")} />;
+        onRole={(role) => action(() => callFunction("setOrganizerRole", { playerUid: person.id, role }), "Member role updated.")}
+        onRemove={() => action(() => callFunction("removeMember", { playerUid: person.id }), `${person.displayName} removed. Past records are kept.`)} />;
     })}</section>
     <GuestManagement guests={unlinkedGuests} members={members} fees={fees} currency={settings?.currency} sessionDate={session?.sessionDate} onError={actions.error}
       onCreate={(displayName, amountMinor) => action(() => callFunction("createGuest", { displayName, amountMinor }), "Guest added.")}
       onFee={(guestId, amountMinor) => action(() => callFunction("updateGuestFee", { guestId, amountMinor }), "Guest fee updated for future sessions.")}
+      onRemove={(guestId) => action(() => callFunction("removeGuest", { guestId }), "Guest removed. Past records are kept.")}
       onLink={(guestId, playerUid) => action(() => callFunction("linkGuestAccount", { guestId, playerUid }), "Guest history linked to player account.")} />
-    <section className="plain-card manager-card"><p className="eyebrow">RECORD A PAYMENT</p><h2>Log money received</h2><PaymentForm members={members} guests={unlinkedGuests} currency={settings?.currency} onError={actions.error} onSave={(target, amountMinor, note, requestId) => action(() => target.startsWith("guest:") ? callFunction("recordGuestPayment", { guestId: target.slice(6), amountMinor, note, requestId }) : callFunction("recordPayment", { playerUid: target.slice(7), amountMinor, note, requestId }), "Payment recorded.")} /></section>
-    <section className="plain-card manager-card"><p className="eyebrow">FIX ATTENDANCE</p><h2>Correct a past session</h2><AttendanceForm members={members} guests={unlinkedGuests} onSave={(target, sessionDate, present) => action(() => target.startsWith("guest:") ? callFunction("recordGuestAttendance", { guestId: target.slice(6), sessionDate, present }) : callFunction("recordAttendance", { playerUid: target.slice(7), sessionDate, present }), "Attendance updated.")} /></section>
-    <section className="plain-card manager-card"><p className="eyebrow">PAYMENT HISTORY</p><h2>Recent payments</h2>{activePayments.length ? activePayments.slice().sort((a, b) => b.receivedAt.toDate().getTime() - a.receivedAt.toDate().getTime()).slice(0, 10).map((payment) => {
+    <section className="plain-card manager-card"><p className="eyebrow">RECORD A PAYMENT</p><h2>Log money received</h2><PaymentForm members={members} guests={guestRecords} currency={settings?.currency} onError={actions.error} onSave={(target, amountMinor, note, requestId) => action(() => target.startsWith("guest:") ? callFunction("recordGuestPayment", { guestId: target.slice(6), amountMinor, note, requestId }) : callFunction("recordPayment", { playerUid: target.slice(7), amountMinor, note, requestId }), "Payment recorded.")} /></section>
+    <section className="plain-card manager-card"><p className="eyebrow">FIX ATTENDANCE</p><h2>Correct a past session</h2><AttendanceForm members={members} guests={guestRecords} onSave={(target, sessionDate, present) => action(() => target.startsWith("guest:") ? callFunction("recordGuestAttendance", { guestId: target.slice(6), sessionDate, present }) : callFunction("recordAttendance", { playerUid: target.slice(7), sessionDate, present }), "Attendance updated.")} /></section>
+    <section className="plain-card manager-card"><p className="eyebrow">PAYMENT HISTORY</p><h2>Recent payments</h2>{activePayments.length ? activePayments.slice().sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()).slice(0, 10).map((payment) => {
       const payer = members.find((item) => item.id === payment.playerUid)?.displayName ?? guests.find((item) => item.id === payment.guestId)?.displayName ?? "Player";
-      return <div className="payment-row" key={payment.id}><div><strong>{payer}</strong><span className="muted">{payment.receivedAt.toDate().toLocaleDateString()} · {settings?.currency ? formatAmount(payment.amountMinor, settings.currency) : ""}</span></div><button className="text-button danger-button" onClick={() => {
+      return <div className="payment-row" key={payment.id}><div><strong>{payer}</strong><span className="muted">{new Date(payment.receivedAt).toLocaleDateString()} · {settings?.currency ? formatAmount(payment.amountMinor, settings.currency) : ""}</span></div><button className="text-button danger-button" onClick={() => {
         const reason = window.prompt("Why is this payment being reversed?");
         if (reason?.trim()) void action(() => callFunction("reversePayment", { paymentId: payment.id, reason: reason.trim() }), "Payment reversed; the balance now reflects the correction.");
       }}>Reverse</button></div>;
     }) : <p className="empty-state">No payments recorded yet.</p>}</section>
-    <section className="plain-card manager-card"><p className="eyebrow">ORGANISER VIEW</p><h2>Group balances</h2>{groupBalances.map(({ person, ledger }) => <div className="money-row" key={person.id}><span>{person.displayName}</span><strong>{settings?.currency ? (ledger.balanceMinor < 0 ? `${formatAmount(ledger.creditMinor, settings.currency)} credit` : formatAmount(ledger.amountDueMinor, settings.currency)) : "—"}</strong></div>)}{guestBalances.map(({ guest, ledger }) => <div className="money-row" key={guest.id}><span>{guest.displayName} <small className="muted">guest</small></span><strong>{settings?.currency ? (ledger.balanceMinor < 0 ? `${formatAmount(ledger.creditMinor, settings.currency)} credit` : formatAmount(ledger.amountDueMinor, settings.currency)) : "—"}</strong></div>)}</section>
+    <section className="plain-card manager-card"><p className="eyebrow">ORGANISER VIEW</p><h2>Group balances</h2>{groupBalances.map(({ person, ledger }) => <div className="money-row" key={person.id}><span>{person.displayName}</span><strong>{settings?.currency ? (ledger.balanceMinor < 0 ? `${formatAmount(ledger.creditMinor, settings.currency)} credit` : formatAmount(ledger.amountDueMinor, settings.currency)) : "—"}</strong></div>)}{guestBalances.map(({ guest, ledger }) => <div className="money-row" key={guest.id}><span>{guest.displayName} <small className="muted">{guest.removedAt ? "removed guest" : "guest"}</small></span><strong>{settings?.currency ? (ledger.balanceMinor < 0 ? `${formatAmount(ledger.creditMinor, settings.currency)} credit` : formatAmount(ledger.amountDueMinor, settings.currency)) : "—"}</strong></div>)}</section>
   </div>;
 }
 
@@ -417,8 +286,8 @@ function GroupSettingsForm({ settings, session, onSave }: { settings: Settings |
   </form>;
 }
 
-function InviteCard({ inviteUrl, onCreate }: { inviteUrl: string; onCreate: () => unknown }) {
-  return <section className="plain-card manager-card"><p className="eyebrow">INVITE PLAYERS</p><h2>Share a private invite</h2><p className="muted">Each invite is valid for seven days and can be used by up to 20 players. New players still need approval.</p><button className="secondary-button" onClick={onCreate}>Create invite link</button>{inviteUrl && <label className="invite-output">Invite link<input readOnly value={inviteUrl} onFocus={(event) => event.currentTarget.select()} /></label>}</section>;
+export function InviteCard({ inviteCode, onCreate, onCopy }: { inviteCode: string; onCreate: () => unknown; onCopy: () => unknown }) {
+  return <section className="plain-card manager-card"><p className="eyebrow">INVITE PLAYERS</p><h2>Share an invite code</h2><p className="muted">Create a code, then ask friends to visit the website, sign in with Google, and enter it. Codes last seven days, allow up to 20 requests, and still need organiser approval.</p><button className="secondary-button" onClick={onCreate}>Create invite code</button>{inviteCode && <><label className="invite-output">Invite code<input readOnly value={inviteCode} onFocus={(event) => event.currentTarget.select()} /></label><button className="text-button" onClick={() => void onCopy()}>Copy code</button></>}</section>;
 }
 
 function ApproveRow({ request, currency, onApprove, onError }: { request: Member; currency?: string; onApprove: (amountMinor: number) => Promise<unknown>; onError: (message: string) => void }) {
@@ -429,39 +298,40 @@ function ApproveRow({ request, currency, onApprove, onError }: { request: Member
   </form>;
 }
 
-function MemberRow({ member, fee, currency, actorRole, onFee, onRole, onError }: {
+function MemberRow({ member, fee, currency, actorRole, onFee, onRole, onRemove, onError }: {
   member: Member; fee?: Fee; currency?: string; actorRole: Member["role"];
   onError: (message: string) => void;
-  onFee: (amountMinor: number) => Promise<unknown>; onRole: (role: "organizer" | "player") => Promise<unknown>;
+  onFee: (amountMinor: number) => Promise<unknown>; onRole: (role: "organizer" | "player") => Promise<unknown>; onRemove: () => Promise<unknown>;
 }) {
   const [amount, setAmount] = useState("");
-  return <div className="member-row"><div className="member-heading"><div><strong>{member.displayName}</strong><span className="muted">{fee && currency ? `${formatAmount(fee.amountMinor, currency)} / session` : "Fee not set"}</span></div><span className="role-pill">{member.role}</span></div><form className="inline-form" onSubmit={async (event) => { event.preventDefault(); if (!currency) return; try { await onFee(parseAmount(amount, currency)); } catch (cause) { onError(messageOf(cause)); } }}><label className="sr-only" htmlFor={`fee-${member.id}`}>New session fee for {member.displayName}</label><input id={`fee-${member.id}`} inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="New fee" required /><button className="secondary-button small-button" disabled={!currency}>Set future fee</button></form>{actorRole === "owner" && member.role !== "owner" && <select aria-label={`Role for ${member.displayName}`} value={member.role} onChange={(event) => void onRole(event.target.value as "organizer" | "player")}><option value="player">Player</option><option value="organizer">Organiser</option></select>}</div>;
+  return <div className="member-row"><div className="member-heading"><div><strong>{member.displayName}</strong><span className="muted">{fee && currency ? `${formatAmount(fee.amountMinor, currency)} / session` : "Fee not set"}</span></div><span className="role-pill">{member.role}</span></div><form className="inline-form" onSubmit={async (event) => { event.preventDefault(); if (!currency) return; try { await onFee(parseAmount(amount, currency)); } catch (cause) { onError(messageOf(cause)); } }}><label className="sr-only" htmlFor={`fee-${member.id}`}>New session fee for {member.displayName}</label><input id={`fee-${member.id}`} inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="New fee" required /><button className="secondary-button small-button" disabled={!currency}>Set future fee</button></form>{actorRole === "owner" && member.role !== "owner" && <select aria-label={`Role for ${member.displayName}`} value={member.role} onChange={(event) => void onRole(event.target.value as "organizer" | "player")}><option value="player">Player</option><option value="organizer">Organiser</option></select>}{member.role !== "owner" && <button className="text-button danger-button" onClick={() => { if (window.confirm(`Remove ${member.displayName} from this group? Their attendance and payments will be kept.`)) void onRemove().catch((cause) => onError(messageOf(cause))); }}>Remove player</button>}</div>;
 }
 
 function PaymentForm({ members, guests, currency, onSave, onError }: { members: Member[]; guests: Guest[]; currency?: string; onSave: (target: string, amountMinor: number, note: string, requestId: string) => Promise<unknown>; onError: (message: string) => void }) {
   const [target, setTarget] = useState(""); const [amount, setAmount] = useState(""); const [note, setNote] = useState(""); const [busy, setBusy] = useState(false);
-  return <form className="form-stack" onSubmit={async (event) => { event.preventDefault(); if (!currency) return; setBusy(true); try { const amountMinor = parseAmount(amount, currency); const { storageKey, requestId } = await paymentRequest(target, amountMinor, note); if (await onSave(target, amountMinor, note, requestId)) { sessionStorage.setItem(storageKey, crypto.randomUUID()); setAmount(""); setNote(""); } } catch (cause) { onError(messageOf(cause)); } finally { setBusy(false); } }}><label>Player<select value={target} onChange={(event) => setTarget(event.target.value)} required><option value="">Choose a player</option><optgroup label="Members">{members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.displayName}</option>)}</optgroup><optgroup label="Guests">{guests.map((guest) => <option key={guest.id} value={`guest:${guest.id}`}>{guest.displayName} (guest)</option>)}</optgroup></select></label><label>Amount<input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder={currency ? formatAmount(0, currency) : "Set currency first"} required /></label><label>Note <span className="muted">(optional)</span><input value={note} onChange={(event) => setNote(event.target.value)} maxLength={160} /></label><button className="primary-button" disabled={!currency || busy}>{busy ? "Saving…" : "Record payment"}</button></form>;
+  return <form className="form-stack" onSubmit={async (event) => { event.preventDefault(); if (!currency) return; setBusy(true); try { const amountMinor = parseAmount(amount, currency); const { storageKey, requestId } = await paymentRequest(target, amountMinor, note); if (await onSave(target, amountMinor, note, requestId)) { sessionStorage.setItem(storageKey, crypto.randomUUID()); setAmount(""); setNote(""); } } catch (cause) { onError(messageOf(cause)); } finally { setBusy(false); } }}><label>Player<select value={target} onChange={(event) => setTarget(event.target.value)} required><option value="">Choose a player</option><optgroup label="Members">{members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.displayName}</option>)}</optgroup><optgroup label="Guests">{guests.map((guest) => <option key={guest.id} value={`guest:${guest.id}`}>{guest.displayName} ({guest.removedAt ? "removed guest" : "guest"})</option>)}</optgroup></select></label><label>Amount<input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder={currency ? formatAmount(0, currency) : "Set currency first"} required /></label><label>Note <span className="muted">(optional)</span><input value={note} onChange={(event) => setNote(event.target.value)} maxLength={160} /></label><button className="primary-button" disabled={!currency || busy}>{busy ? "Saving…" : "Record payment"}</button></form>;
 }
 
 function AttendanceForm({ members, guests, onSave }: { members: Member[]; guests: Guest[]; onSave: (target: string, date: string, present: boolean) => Promise<unknown> }) {
   const [target, setTarget] = useState(""); const [date, setDate] = useState(""); const [present, setPresent] = useState(true); const [busy, setBusy] = useState(false);
-  return <form className="form-stack" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await onSave(target, date, present); } finally { setBusy(false); } }}><label>Player<select value={target} onChange={(event) => setTarget(event.target.value)} required><option value="">Choose a player</option><optgroup label="Members">{members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.displayName}</option>)}</optgroup><optgroup label="Guests">{guests.map((guest) => <option key={guest.id} value={`guest:${guest.id}`}>{guest.displayName} (guest)</option>)}</optgroup></select></label><label>Friday session date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} required /></label><label className="checkbox-label"><input type="checkbox" checked={present} onChange={(event) => setPresent(event.target.checked)} /> Player attended</label><button className="secondary-button" disabled={busy}>{busy ? "Saving…" : "Save correction"}</button></form>;
+  return <form className="form-stack" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await onSave(target, date, present); } finally { setBusy(false); } }}><label>Player<select value={target} onChange={(event) => setTarget(event.target.value)} required><option value="">Choose a player</option><optgroup label="Members">{members.map((member) => <option key={member.id} value={`member:${member.id}`}>{member.displayName}</option>)}</optgroup><optgroup label="Guests">{guests.map((guest) => <option key={guest.id} value={`guest:${guest.id}`}>{guest.displayName} ({guest.removedAt ? "removed guest" : "guest"})</option>)}</optgroup></select></label><label>Friday session date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} required /></label><label className="checkbox-label"><input type="checkbox" checked={present} onChange={(event) => setPresent(event.target.checked)} /> Player attended</label><button className="secondary-button" disabled={busy}>{busy ? "Saving…" : "Save correction"}</button></form>;
 }
 
-function GuestManagement({ guests, members, fees, currency, sessionDate, onCreate, onFee, onLink, onError }: {
+function GuestManagement({ guests, members, fees, currency, sessionDate, onCreate, onFee, onRemove, onLink, onError }: {
   guests: Guest[]; members: Member[]; fees: Fee[]; currency?: string; sessionDate?: string; onError: (message: string) => void;
   onCreate: (name: string, amountMinor: number) => Promise<unknown>;
   onFee: (guestId: string, amountMinor: number) => Promise<unknown>;
+  onRemove: (guestId: string) => Promise<unknown>;
   onLink: (guestId: string, playerUid: string) => Promise<unknown>;
 }) {
   const [name, setName] = useState(""); const [amount, setAmount] = useState(""); const [busy, setBusy] = useState(false);
   return <section className="plain-card manager-card"><p className="eyebrow">GUEST PLAYERS</p><h2>Add a guest</h2><form className="inline-form" onSubmit={async (event) => { event.preventDefault(); if (!currency) return; setBusy(true); try { if (await onCreate(name.trim(), parseAmount(amount, currency))) { setName(""); setAmount(""); } } catch (cause) { onError(messageOf(cause)); } finally { setBusy(false); } }}><label className="sr-only" htmlFor="guest-name">Guest name</label><input id="guest-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Guest name" required maxLength={80} /><label className="sr-only" htmlFor="guest-fee">Fee per session</label><input id="guest-fee" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Fee / session" required /><button className="primary-button small-button" disabled={!currency || busy}>Add guest</button></form>{guests.length ? guests.map((guest) => {
     const fee = fees.filter((item) => item.playerUid === guest.id && (!sessionDate || item.effectiveFrom <= sessionDate)).sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
-    return <GuestRow key={guest.id} guest={guest} members={members} fee={fee} currency={currency} onFee={onFee} onLink={onLink} onError={onError} />;
+    return <GuestRow key={guest.id} guest={guest} members={members} fee={fee} currency={currency} onFee={onFee} onRemove={onRemove} onLink={onLink} onError={onError} />;
   }) : <p className="empty-state">No active guests.</p>}</section>;
 }
 
-function GuestRow({ guest, members, fee, currency, onFee, onLink, onError }: { guest: Guest; members: Member[]; fee?: Fee; currency?: string; onFee: (guestId: string, amountMinor: number) => Promise<unknown>; onLink: (guestId: string, playerUid: string) => Promise<unknown>; onError: (message: string) => void }) {
+function GuestRow({ guest, members, fee, currency, onFee, onRemove, onLink, onError }: { guest: Guest; members: Member[]; fee?: Fee; currency?: string; onFee: (guestId: string, amountMinor: number) => Promise<unknown>; onRemove: (guestId: string) => Promise<unknown>; onLink: (guestId: string, playerUid: string) => Promise<unknown>; onError: (message: string) => void }) {
   const [amount, setAmount] = useState(""); const [playerUid, setPlayerUid] = useState(""); const [busy, setBusy] = useState(false);
-  return <div className="member-row"><div className="member-heading"><div><strong>{guest.displayName}</strong><span className="muted">{fee && currency ? `${formatAmount(fee.amountMinor, currency)} / session` : "Fee not set"}</span></div></div><form className="inline-form" onSubmit={async (event) => { event.preventDefault(); if (!currency) return; setBusy(true); try { if (await onFee(guest.id, parseAmount(amount, currency))) setAmount(""); } catch (cause) { onError(messageOf(cause)); } finally { setBusy(false); } }}><input aria-label={`Future fee for ${guest.displayName}`} inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="New fee" required /><button className="secondary-button small-button" disabled={!currency || busy}>Set future fee</button></form><form className="inline-form" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await onLink(guest.id, playerUid); } catch (cause) { onError(messageOf(cause)); } finally { setBusy(false); } }}><select aria-label={`Link ${guest.displayName} to an account`} value={playerUid} onChange={(event) => setPlayerUid(event.target.value)} required><option value="">Link to approved account…</option>{members.filter((member) => !member.linkedGuestId).map((member) => <option key={member.id} value={member.id}>{member.displayName}</option>)}</select><button className="secondary-button small-button" disabled={busy}>Link history</button></form></div>;
+  return <div className="member-row"><div className="member-heading"><div><strong>{guest.displayName}</strong><span className="muted">{fee && currency ? `${formatAmount(fee.amountMinor, currency)} / session` : "Fee not set"}</span></div><button className="text-button danger-button" disabled={busy} onClick={async () => { if (!window.confirm(`Remove ${guest.displayName} from the guest list? Their attendance and payments will be kept.`)) return; setBusy(true); try { await onRemove(guest.id); } catch (cause) { onError(messageOf(cause)); } finally { setBusy(false); } }}>Remove guest</button></div><form className="inline-form" onSubmit={async (event) => { event.preventDefault(); if (!currency) return; setBusy(true); try { if (await onFee(guest.id, parseAmount(amount, currency))) setAmount(""); } catch (cause) { onError(messageOf(cause)); } finally { setBusy(false); } }}><input aria-label={`Future fee for ${guest.displayName}`} inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="New fee" required /><button className="secondary-button small-button" disabled={!currency || busy}>Set future fee</button></form><form className="inline-form" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await onLink(guest.id, playerUid); } catch (cause) { onError(messageOf(cause)); } finally { setBusy(false); } }}><select aria-label={`Link ${guest.displayName} to an account`} value={playerUid} onChange={(event) => setPlayerUid(event.target.value)} required><option value="">Link to approved account…</option>{members.filter((member) => !member.linkedGuestId).map((member) => <option key={member.id} value={member.id}>{member.displayName}</option>)}</select><button className="secondary-button small-button" disabled={busy}>Link history</button></form></div>;
 }
