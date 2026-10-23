@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS invites (
   expires_at timestamptz NOT NULL
 );
 
+ALTER TABLE invites ADD COLUMN IF NOT EXISTS code text;
+ALTER TABLE invites ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
+ALTER TABLE invites ALTER COLUMN remaining_uses DROP NOT NULL;
+ALTER TABLE invites ALTER COLUMN expires_at DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS invites_one_active_code ON invites ((true)) WHERE code IS NOT NULL AND revoked_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS attendance (
   session_date date NOT NULL,
   subject_type text NOT NULL CHECK (subject_type IN ('member', 'guest')),

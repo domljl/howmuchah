@@ -163,7 +163,11 @@ export async function createApp(deps: Dependencies = {}): Promise<FastifyInstanc
     const member = mapMember(memberRow);
     if (memberRow.removed_at) return { member: { ...member, status: "removed" } };
     if (memberRow.status !== "approved") return { member };
-    const settingsResult = await pool.query("SELECT * FROM group_settings WHERE id = true");
+    const manager = memberRow.role === "owner" || memberRow.role === "organizer";
+    const [settingsResult, inviteResult] = await Promise.all([
+      pool.query("SELECT * FROM group_settings WHERE id = true"),
+      manager ? pool.query("SELECT code FROM invites WHERE code IS NOT NULL AND revoked_at IS NULL LIMIT 1") : Promise.resolve({ rows: [] }),
+    ]);
     const settings = settingsResult.rows[0] as Record<string, any> | undefined;
     const publicSettings = settings ? {
       timeZone: settings.time_zone ?? undefined,
@@ -179,12 +183,11 @@ export async function createApp(deps: Dependencies = {}): Promise<FastifyInstanc
       const window = getSessionWindow(current, timeZone);
       return { configured: true, sessionDate: window.sessionDate, currentDate: DateTime.fromJSDate(current, { zone: "utc" }).setZone(timeZone).toISODate()!, isOpen: window.isOpen, opensAt: window.opensAt, closesAt: window.closesAt, timeZone, currency: settingsCurrency(settings) };
     })() : { configured: false };
-    if (!configured) return { member, settings: publicSettings, session };
+    if (!configured) return { member, settings: publicSettings, session, ...(manager ? { inviteCode: inviteResult.rows[0]?.code ?? null } : {}) };
     const timezone = settingsZone(settings);
     const { sessionDate, currentDate } = session as { sessionDate: string; currentDate: string };
     const monthStart = `${currentDate.slice(0, 7)}-01`;
     const monthEnd = DateTime.fromISO(monthStart, { zone: timezone }).plus({ months: 1 }).toISODate()!;
-    const manager = memberRow.role === "owner" || memberRow.role === "organizer";
     const [publicMembersResult, sessionsResult, monthResult, allChargesResult, allPaymentsResult, allReversalsResult, allFeesResult, guestsResult, publicGuestsResult] = await Promise.all([
       pool.query("SELECT * FROM members WHERE status = 'approved' AND removed_at IS NULL ORDER BY display_name"),
       pool.query("SELECT * FROM attendance WHERE session_date = $1 ORDER BY display_name", [sessionDate]),
@@ -248,6 +251,7 @@ export async function createApp(deps: Dependencies = {}): Promise<FastifyInstanc
       allReversals: adminReversals,
       fees: manager ? allFees : [],
       guests: guestsResult.rows.map((row: Record<string, any>) => ({ id: row.id, displayName: row.display_name, status: row.status, linkedUid: row.linked_uid ?? undefined, removedAt: timestampString(row.removed_at) })),
+      ...(manager ? { inviteCode: inviteResult.rows[0]?.code ?? null } : {}),
     };
   }
 
@@ -278,9 +282,21 @@ export async function createApp(deps: Dependencies = {}): Promise<FastifyInstanc
     }),
     createInvite: async (actor, _data) => transaction(pool, async (client) => {
       await isOrganizer(actor, client);
-      const code = randomBytes(6).toString("base64url").slice(0, 6); const expiresAt = new Date(now().getTime() + 7 * 24 * 60 * 60 * 1000);
-      await client.query("INSERT INTO invites (token_hash, remaining_uses, created_by, expires_at) VALUES ($1, 20, $2, $3)", [createHash("sha256").update(code).digest("hex"), actor.uid, expiresAt]);
-      return { code, expiresAt: expiresAt.toISOString() };
+      const current = await client.query("SELECT code FROM invites WHERE code IS NOT NULL AND revoked_at IS NULL LIMIT 1");
+      if (current.rows[0]) return { code: current.rows[0].code };
+      const code = randomBytes(6).toString("base64url").slice(0, 6);
+      const inserted = await client.query("INSERT INTO invites (token_hash, code, remaining_uses, created_by, expires_at) VALUES ($1, $2, NULL, $3, NULL) ON CONFLICT DO NOTHING RETURNING code", [createHash("sha256").update(code).digest("hex"), code, actor.uid]);
+      if (inserted.rows[0]) return { code: inserted.rows[0].code };
+      const active = await client.query("SELECT code FROM invites WHERE code IS NOT NULL AND revoked_at IS NULL LIMIT 1");
+      if (!active.rows[0]) fail(409, "Could not create an invite code. Try again.");
+      return { code: active.rows[0].code };
+    }),
+    revokeInvite: async (actor) => transaction(pool, async (client) => {
+      await isOrganizer(actor, client);
+      const result = await client.query("UPDATE invites SET revoked_at = now() WHERE code IS NOT NULL AND revoked_at IS NULL RETURNING token_hash");
+      if (!result.rowCount) fail(404, "There is no active invite code to revoke.");
+      await audit(client, "invite-revoked", actor, "active-invite");
+      return { revoked: true };
     }),
     joinWithInvite: async (actor, data) => {
       const code = text(data.code, "invite code", 100);
@@ -290,8 +306,9 @@ export async function createApp(deps: Dependencies = {}): Promise<FastifyInstanc
         const existing = await client.query("SELECT status FROM members WHERE uid = $1", [actor.uid]);
         if (existing.rows[0]?.status) return { status: existing.rows[0].status };
         const invite = await client.query("SELECT * FROM invites WHERE token_hash = $1 FOR UPDATE", [createHash("sha256").update(code).digest("hex")]);
-        if (!invite.rows[0] || invite.rows[0].remaining_uses < 1 || new Date(invite.rows[0].expires_at) <= now()) fail(404, "This invite is invalid or expired. Ask an organiser for a new one.");
-        await client.query("UPDATE invites SET remaining_uses = remaining_uses - 1 WHERE token_hash = $1", [invite.rows[0].token_hash]);
+        const row = invite.rows[0];
+        if (!row || row.revoked_at || (row.remaining_uses !== null && row.remaining_uses < 1) || (row.expires_at && new Date(row.expires_at) <= now())) fail(404, "This invite is invalid or expired. Ask an organiser for a new one.");
+        if (row.remaining_uses !== null) await client.query("UPDATE invites SET remaining_uses = remaining_uses - 1 WHERE token_hash = $1", [row.token_hash]);
         await client.query("INSERT INTO members (uid, display_name, email, role, status) VALUES ($1, $2, $3, 'player', 'pending')", [actor.uid, displayName, profile.email ?? null]);
         await audit(client, "member-requested", actor, actor.uid);
         return { status: "pending" };

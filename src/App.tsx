@@ -15,7 +15,7 @@ type Fee = { id: string; playerUid: string; amountMinor: number; effectiveFrom: 
 type Settings = { timeZone?: string; currency?: string; launchSessionDate?: string; paymentQrDataUrl?: string };
 type SessionInfo = { configured: boolean; sessionDate?: string; currentDate?: string; isOpen?: boolean; opensAt?: string; closesAt?: string; timeZone?: string; currency?: string };
 type PaymentStatus = { id: string; displayName: string; isGuest: boolean; paymentStatus: "none" | "paid" | "unpaid" };
-type Dashboard = { member: Member | null; settings?: Settings | null; session?: SessionInfo; attendance?: Attendance[]; monthAttendance?: Attendance[]; charges?: Charge[]; linkedCharges?: Charge[]; payments?: Payment[]; linkedPayments?: Payment[]; myFees?: Fee[]; reversals?: Reversal[]; linkedReversals?: Reversal[]; members?: Member[]; paymentStatuses?: PaymentStatus[]; requests?: Member[]; allCharges?: Charge[]; allPayments?: Payment[]; allReversals?: Reversal[]; fees?: Fee[]; guests?: Guest[] };
+type Dashboard = { member: Member | null; inviteCode?: string | null; settings?: Settings | null; session?: SessionInfo; attendance?: Attendance[]; monthAttendance?: Attendance[]; charges?: Charge[]; linkedCharges?: Charge[]; payments?: Payment[]; linkedPayments?: Payment[]; myFees?: Fee[]; reversals?: Reversal[]; linkedReversals?: Reversal[]; members?: Member[]; paymentStatuses?: PaymentStatus[]; requests?: Member[]; allCharges?: Charge[]; allPayments?: Payment[]; allReversals?: Reversal[]; fees?: Fee[]; guests?: Guest[] };
 type Tab = "home" | "sessions" | "bill" | "manage";
 
 function messageOf(error: unknown): string { return error instanceof Error ? error.message : "Something went wrong. Please try again."; }
@@ -84,7 +84,7 @@ function SignedInApp() {
       {tab === "home" && <HomePage session={session} sessionReady member={member} attendance={data.attendance ?? []} ledger={ledger} currency={currency} fee={(data.myFees ?? []).filter((item) => !session.sessionDate || item.effectiveFrom <= session.sessionDate).at(-1)} paymentStatuses={data.paymentStatuses ?? []} onCheckIn={async (undo) => { actions.clear(); try { await callFunction(undo ? "undoCheckIn" : "checkIn"); actions.notice(undo ? "Your check-in was undone." : "You’re checked in for this session."); } catch (cause) { actions.error(messageOf(cause)); } }} />}
       {tab === "bill" && <BillPage ledger={ledger} currency={currency} payments={[...(data.payments ?? []), ...(data.linkedPayments ?? [])]} reversals={[...(data.reversals ?? []), ...(data.linkedReversals ?? [])]} qr={settings?.paymentQrDataUrl} />}
       {tab === "sessions" && <SessionsPage attendance={data.monthAttendance ?? []} members={data.members ?? []} currentDate={session.currentDate} sessionDate={session.sessionDate} isOpen={session.isOpen} timeZone={session.timeZone} launchDate={settings?.launchSessionDate} />}
-      {tab === "manage" && isOrganizer && <ManagePage actor={member} settings={settings} session={session} members={data.members ?? []} requests={data.requests ?? []} charges={data.allCharges ?? []} payments={data.allPayments ?? []} reversals={data.allReversals ?? []} fees={data.fees ?? []} guests={data.guests ?? []} actions={actions} />}
+      {tab === "manage" && isOrganizer && <ManagePage actor={member} settings={settings} session={session} inviteCode={data.inviteCode} members={data.members ?? []} requests={data.requests ?? []} charges={data.allCharges ?? []} payments={data.allPayments ?? []} reversals={data.allReversals ?? []} fees={data.fees ?? []} guests={data.guests ?? []} actions={actions} />}
     </main><nav className="bottom-nav" aria-label="Main navigation"><NavButton active={tab === "home"} icon="home" onClick={() => setTab("home")}>Home</NavButton><NavButton active={tab === "sessions"} icon="sessions" onClick={() => setTab("sessions")}>Sessions</NavButton><NavButton active={tab === "bill"} icon="bill" onClick={() => setTab("bill")}>My bill</NavButton>{isOrganizer && <NavButton active={tab === "manage"} icon="manage" onClick={() => setTab("manage")}>Manage</NavButton>}</nav>
   </div>;
 }
@@ -207,12 +207,13 @@ function CloseIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="m6 6 12 12M18 6 6 18" /></svg>;
 }
 
-function ManagePage({ actor, settings, session, members, requests, charges, payments, reversals, fees, guests, actions }: {
-  actor: Member; settings: Settings | null; session: SessionInfo | null; members: Member[]; requests: Member[];
+function ManagePage({ actor, settings, session, inviteCode: savedInviteCode, members, requests, charges, payments, reversals, fees, guests, actions }: {
+  actor: Member; settings: Settings | null; session: SessionInfo | null; inviteCode?: string | null; members: Member[]; requests: Member[];
   charges: Charge[]; payments: Payment[]; reversals: Reversal[]; fees: Fee[]; guests: Guest[];
   actions: { error: (value: string) => void; notice: (value: string) => void; clear: () => void };
 }) {
-  const [inviteCode, setInviteCode] = useState("");
+  const [inviteCode, setInviteCode] = useState(savedInviteCode ?? "");
+  useEffect(() => setInviteCode(savedInviteCode ?? ""), [savedInviteCode]);
   const action = async (work: () => Promise<unknown>, success: string) => {
     actions.clear();
     try { await work(); actions.notice(success); return true; } catch (cause) { actions.error(messageOf(cause)); return false; }
@@ -242,7 +243,12 @@ function ManagePage({ actor, settings, session, members, requests, charges, paym
     <InviteCard inviteCode={inviteCode} onCreate={() => action(async () => {
       const result = await callFunction<{ code: string }>("createInvite");
       setInviteCode(result.code);
-    }, "Invite code created. Send it to your friends.")} onCopy={() => action(async () => {
+      window.dispatchEvent(new Event("howmuchah:refresh"));
+    }, "Invite code created. It stays active until revoked.")} onRevoke={() => action(async () => {
+      await callFunction("revokeInvite");
+      setInviteCode("");
+      window.dispatchEvent(new Event("howmuchah:refresh"));
+    }, "Invite code revoked.")} onCopy={() => action(async () => {
       if (!navigator.clipboard) throw new Error("Clipboard unavailable. Select and copy the invite code instead.");
       await navigator.clipboard.writeText(inviteCode);
     }, "Invite code copied.")} />
@@ -286,8 +292,8 @@ function GroupSettingsForm({ settings, session, onSave }: { settings: Settings |
   </form>;
 }
 
-export function InviteCard({ inviteCode, onCreate, onCopy }: { inviteCode: string; onCreate: () => unknown; onCopy: () => unknown }) {
-  return <section className="plain-card manager-card"><p className="eyebrow">INVITE PLAYERS</p><h2>Share an invite code</h2><p className="muted">Create a code, then ask friends to visit the website, sign in with Google, and enter it. Codes last seven days, allow up to 20 requests, and still need organiser approval.</p><button className="secondary-button" onClick={onCreate}>Create invite code</button>{inviteCode && <><label className="invite-output">Invite code<input readOnly value={inviteCode} onFocus={(event) => event.currentTarget.select()} /></label><button className="text-button" onClick={() => void onCopy()}>Copy code</button></>}</section>;
+export function InviteCard({ inviteCode, onCreate, onCopy, onRevoke }: { inviteCode: string; onCreate: () => unknown; onCopy: () => unknown; onRevoke: () => unknown }) {
+  return <section className="plain-card manager-card"><p className="eyebrow">INVITE PLAYERS</p><h2>Share an invite code</h2><p className="muted">Ask friends to visit the website, sign in with Google, and enter this code. It stays active until you revoke it; requests still need organiser approval.</p>{inviteCode ? <><label className="invite-output">Invite code<input readOnly value={inviteCode} onFocus={(event) => event.currentTarget.select()} /></label><button className="text-button" onClick={() => void onCopy()}>Copy code</button><button className="text-button danger-button" onClick={() => { if (window.confirm("Revoke this code? Friends can no longer use it to request access.")) void onRevoke(); }}>Revoke code</button></> : <button className="secondary-button" onClick={onCreate}>Create invite code</button>}</section>;
 }
 
 function ApproveRow({ request, currency, onApprove, onError }: { request: Member; currency?: string; onApprove: (amountMinor: number) => Promise<unknown>; onError: (message: string) => void }) {
