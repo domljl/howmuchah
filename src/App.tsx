@@ -212,7 +212,7 @@ function ManagePage({ actor, settings, session, members, requests, charges, paym
   charges: Charge[]; payments: Payment[]; reversals: Reversal[]; fees: Fee[]; guests: Guest[];
   actions: { error: (value: string) => void; notice: (value: string) => void; clear: () => void };
 }) {
-  const [inviteUrl, setInviteUrl] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const action = async (work: () => Promise<unknown>, success: string) => {
     actions.clear();
     try { await work(); actions.notice(success); return true; } catch (cause) { actions.error(messageOf(cause)); return false; }
@@ -239,12 +239,13 @@ function ManagePage({ actor, settings, session, members, requests, charges, paym
   return <div className="dashboard-stack manager-stack">
     {actor.role === "owner" && <GroupSettingsForm settings={settings} session={session} onSave={(timeZone, currency) => action(() => callFunction("setGroupSettings", { timeZone, currency }), "Group settings saved.")} />}
     <section className="plain-card manager-card"><h2>PayNow QR code</h2><p className="muted">Players can scan this from their bill. Use PNG, JPEG, or WebP up to 2 MB.</p>{settings?.paymentQrDataUrl && <img className="paynow-qr" src={settings.paymentQrDataUrl} alt="Current group PayNow QR code" />}<label>Upload QR image<input type="file" accept="image/png,image/jpeg,image/webp" disabled={qrBusy} onChange={async (event) => { const input = event.currentTarget; const file = input.files?.[0]; if (!file) return; if (file.size > 2_000_000) { actions.error("Choose an image under 2 MB."); input.value = ""; return; } setQrBusy(true); try { const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1] ?? ""); reader.onerror = () => reject(new Error("Could not read that image.")); reader.readAsDataURL(file); }); await action(() => callFunction("setPaynowQr", { data, mimeType: file.type }), "PayNow QR updated."); } catch (cause) { actions.error(messageOf(cause)); } finally { setQrBusy(false); input.value = ""; } }} /></label>{settings?.paymentQrDataUrl && <button className="text-button danger-button" onClick={() => void action(() => callFunction("setPaynowQr", { data: null }), "PayNow QR removed.")}>Remove QR code</button>}</section>
-    <InviteCard inviteUrl={inviteUrl} onCreate={() => action(async () => {
+    <InviteCard inviteCode={inviteCode} onCreate={() => action(async () => {
       const result = await callFunction<{ code: string }>("createInvite");
-      const link = new URL(window.location.href); link.search = `?invite=${encodeURIComponent(result.code)}`;
-      setInviteUrl(link.toString());
-      await navigator.clipboard?.writeText(link.toString());
-    }, "Invite link created and copied.")} />
+      setInviteCode(result.code);
+    }, "Invite code created. Send it to your friends.")} onCopy={() => action(async () => {
+      if (!navigator.clipboard) throw new Error("Clipboard unavailable. Select and copy the invite code instead.");
+      await navigator.clipboard.writeText(inviteCode);
+    }, "Invite code copied.")} />
     <section className="plain-card manager-card"><div className="section-heading"><div><p className="eyebrow">ACCESS REQUESTS</p><h2>Waiting for approval</h2></div><span className="count-pill">{requests.length}</span></div>
       {requests.length === 0 ? <p className="empty-state">No one is waiting right now.</p> : requests.map((request) => <ApproveRow key={request.id} request={request} currency={settings?.currency} onError={actions.error} onApprove={(amountMinor) => action(() => callFunction("approveMember", { playerUid: request.id, amountMinor }), `${request.displayName} approved.`)} />)}
     </section>
@@ -285,8 +286,8 @@ function GroupSettingsForm({ settings, session, onSave }: { settings: Settings |
   </form>;
 }
 
-function InviteCard({ inviteUrl, onCreate }: { inviteUrl: string; onCreate: () => unknown }) {
-  return <section className="plain-card manager-card"><p className="eyebrow">INVITE PLAYERS</p><h2>Share a private invite</h2><p className="muted">Each invite is valid for seven days and can be used by up to 20 players. New players still need approval.</p><button className="secondary-button" onClick={onCreate}>Create invite link</button>{inviteUrl && <label className="invite-output">Invite link<input readOnly value={inviteUrl} onFocus={(event) => event.currentTarget.select()} /></label>}</section>;
+export function InviteCard({ inviteCode, onCreate, onCopy }: { inviteCode: string; onCreate: () => unknown; onCopy: () => unknown }) {
+  return <section className="plain-card manager-card"><p className="eyebrow">INVITE PLAYERS</p><h2>Share an invite code</h2><p className="muted">Create a code, then ask friends to visit the website, sign in with Google, and enter it. Codes last seven days, allow up to 20 requests, and still need organiser approval.</p><button className="secondary-button" onClick={onCreate}>Create invite code</button>{inviteCode && <><label className="invite-output">Invite code<input readOnly value={inviteCode} onFocus={(event) => event.currentTarget.select()} /></label><button className="text-button" onClick={() => void onCopy()}>Copy code</button></>}</section>;
 }
 
 function ApproveRow({ request, currency, onApprove, onError }: { request: Member; currency?: string; onApprove: (amountMinor: number) => Promise<unknown>; onError: (message: string) => void }) {

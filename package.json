@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "tsc -b && tsc -p tsconfig.api.json && vite build",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.api.json --noEmit",
-    "test": "vitest run tests/domain.test.ts tests/money.test.ts tests/api.test.ts",
+    "test": "vitest run tests/domain.test.ts tests/money.test.ts tests/api.test.ts tests/invite.test.ts",
     "api:dev": "tsx watch server/src/index.ts",
     "api:start": "node api-dist/server/src/index.js",
     "preview": "vite preview"
