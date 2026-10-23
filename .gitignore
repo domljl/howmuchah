@@ -16,22 +16,16 @@ private/
 service-account*.json
 *-service-account*.json
 *serviceAccountKey*.json
-*firebase-adminsdk*.json
 serviceAccount*.json
 application_default_credentials.json
 credentials.json
 
-# Local databases, emulator exports, and Firebase cache/logs
+# Local databases
 *.db
 *.sqlite
 *.sqlite3
-*-emulator-export*/
-firebase-export*/
-emulator-export*/
-emulator-data/
 *-debug.log
 *-debug.*.log
-.firebase/
 
 # Generated dependencies and build/test output
 node_modules/

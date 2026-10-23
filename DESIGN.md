@@ -111,7 +111,7 @@ components:
 
 Keep the weekly badminton task familiar and quick to scan. The interface is a practical mobile dashboard with a soft light canvas, charcoal text, and a restrained magenta accent. The selected direction uses the layered-record sketch's colors while keeping its simple dashboard layout.
 
-Google Calendar, Apple Wallet, and Splitwise are polish references for clear states, tidy information, and familiar controls. Product facts and visibility rules live in `PRODUCT.md`; screen composition lives in `DESIGN_BRIEF.md`.
+Google Calendar, Apple Wallet, and Splitwise are polish references for clear states, tidy information, and familiar controls. Product facts and visibility rules live in `PRODUCT.md`.
 
 ## Colors
 

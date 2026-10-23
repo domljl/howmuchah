@@ -5,7 +5,7 @@ import { InviteCard } from "../src/App.js";
 
 describe("organizer invite", () => {
   it("shows a shareable code and tells players to enter it on the site", () => {
-    const code = "abc123-example-code";
+    const code = "a1b2c3";
     const html = renderToStaticMarkup(createElement(InviteCard, { inviteCode: code, onCreate: vi.fn(), onCopy: vi.fn() }));
 
     expect(html).toContain("Invite code");
