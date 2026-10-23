@@ -56,6 +56,13 @@ function SignedInApp() {
     return () => { active = false; window.clearInterval(timer); window.removeEventListener("howmuchah:refresh", refresh); };
   }, [isSignedIn]);
   const member = data?.member ?? null;
+  const saveNickname = async (nickname: string) => {
+    try {
+      await callFunction("updateMyNickname", { nickname });
+      setData(await getBootstrap<Dashboard>());
+      setNotice("Your group nickname was updated.");
+    } catch (cause) { setError(messageOf(cause)); throw cause; }
+  };
   useEffect(() => {
     const code = new URLSearchParams(window.location.search).get("invite");
     if (!isSignedIn || !user || member || !code) return;
@@ -70,7 +77,7 @@ function SignedInApp() {
   if (!isLoaded) return <LoadingPage label="Connecting securely…" />;
   if (!isSignedIn) return <SignIn error={error} />;
   if (!data) return <LoadingPage label="Loading your group access…" error={error} onSignOut={() => void signOut()} />;
-  if (member?.status === "pending") return <PendingPage name={member.displayName} notice={notice} onSignOut={() => void signOut()} />;
+  if (member?.status === "pending") return <PendingPage name={member.displayName} notice={notice} onSaveNickname={saveNickname} onSignOut={() => void signOut()} />;
   if (member?.status === "removed") return <LoadingPage label="Your access to this group has been removed." onSignOut={() => void signOut()} />;
   if (!member) return <JoinPage error={error} onJoin={(code) => void callFunction("joinWithInvite", { code }).then(() => { setNotice("Your request is with the organisers."); }).catch((cause) => setError(messageOf(cause)))} onSignOut={() => void signOut()} />;
   const settings = data.settings ?? null;
@@ -81,7 +88,7 @@ function SignedInApp() {
     <header className="topbar"><a className="brand" href="#home" onClick={(event) => { event.preventDefault(); setTab("home"); }}>HowMuchAh<span className="brand-dot">.</span></a><div className="account"><span className="account-name">{member.displayName}</span><button className="text-button" onClick={() => void signOut()}>Sign out</button></div></header>
     <main className="page-content"><div className="page-heading"><div><p className="eyebrow">SCHOOL BADMINTON GROUP</p><h1>{tab === "home" ? "Your session" : tab === "bill" ? "Your bill" : tab === "sessions" ? "Sessions" : "Manage group"}</h1></div></div>
       {error && <div className="alert alert-error" role="alert">{error}<button aria-label="Dismiss" onClick={() => setError("")}><CloseIcon /></button></div>}{notice && <div className="alert alert-success" role="status">{notice}<button aria-label="Dismiss" onClick={() => setNotice("")}><CloseIcon /></button></div>}
-      {tab === "home" && <HomePage session={session} sessionReady member={member} attendance={data.attendance ?? []} ledger={ledger} currency={currency} fee={(data.myFees ?? []).filter((item) => !session.sessionDate || item.effectiveFrom <= session.sessionDate).at(-1)} paymentStatuses={data.paymentStatuses ?? []} onCheckIn={async (undo) => { actions.clear(); try { await callFunction(undo ? "undoCheckIn" : "checkIn"); actions.notice(undo ? "Your check-in was undone." : "You’re checked in for this session."); } catch (cause) { actions.error(messageOf(cause)); } }} />}
+      {tab === "home" && <HomePage session={session} sessionReady member={member} attendance={data.attendance ?? []} ledger={ledger} currency={currency} fee={(data.myFees ?? []).filter((item) => !session.sessionDate || item.effectiveFrom <= session.sessionDate).at(-1)} paymentStatuses={data.paymentStatuses ?? []} onCheckIn={async (undo) => { actions.clear(); try { await callFunction(undo ? "undoCheckIn" : "checkIn"); actions.notice(undo ? "Your check-in was undone." : "You’re checked in for this session."); } catch (cause) { actions.error(messageOf(cause)); } }} onNickname={saveNickname} />}
       {tab === "bill" && <BillPage ledger={ledger} currency={currency} payments={[...(data.payments ?? []), ...(data.linkedPayments ?? [])]} reversals={[...(data.reversals ?? []), ...(data.linkedReversals ?? [])]} qr={settings?.paymentQrDataUrl} />}
       {tab === "sessions" && <SessionsPage attendance={data.monthAttendance ?? []} members={data.members ?? []} currentDate={session.currentDate} sessionDate={session.sessionDate} isOpen={session.isOpen} timeZone={session.timeZone} launchDate={settings?.launchSessionDate} />}
       {tab === "manage" && isOrganizer && <ManagePage actor={member} settings={settings} session={session} inviteCode={data.inviteCode} members={data.members ?? []} requests={data.requests ?? []} charges={data.allCharges ?? []} payments={data.allPayments ?? []} reversals={data.allReversals ?? []} fees={data.fees ?? []} guests={data.guests ?? []} actions={actions} />}
@@ -101,8 +108,8 @@ function SignIn({ error }: { error: string }) {
   return <main className="center-page"><span className="brand">HowMuchAh<span className="brand-dot">.</span></span><section className="plain-card"><p className="eyebrow">FRIDAY BADMINTON</p><h1>Keep the game simple.</h1><p className="muted">Check in for the session and keep track of your own shuttle contribution.</p><SignInButton mode="modal"><button className="primary-button">Continue with Google</button></SignInButton>{error && <p className="form-error" role="alert">{error}</p>}</section></main>;
 }
 
-function PendingPage({ name, notice, onSignOut }: { name: string; notice: string; onSignOut: () => void }) {
-  return <main className="center-page"><span className="brand">HowMuchAh<span className="brand-dot">.</span></span><section className="plain-card"><p className="eyebrow">REQUEST RECEIVED</p><h1>You’re in the queue, {name.split(" ")[0]}.</h1><p className="muted">An organiser needs to approve your request and set your fee before group attendance becomes visible.</p>{notice && <p role="status">{notice}</p>}<button className="secondary-button" onClick={onSignOut}>Sign out</button></section></main>;
+function PendingPage({ name, notice, onSaveNickname, onSignOut }: { name: string; notice: string; onSaveNickname: (nickname: string) => Promise<void>; onSignOut: () => void }) {
+  return <main className="center-page"><span className="brand">HowMuchAh<span className="brand-dot">.</span></span><section className="plain-card"><p className="eyebrow">REQUEST RECEIVED</p><h1>You’re in the queue, {name.split(" ")[0]}.</h1><p className="muted">An organiser needs to approve your request and set your fee before group attendance becomes visible.</p>{notice && <p role="status">{notice}</p>}<button className="secondary-button" onClick={onSignOut}>Sign out</button></section><NicknameForm current={name} onSave={onSaveNickname} /></main>;
 }
 
 function JoinPage({ error, onJoin, onSignOut }: { error: string; onJoin: (code: string) => void; onSignOut: () => void }) {
@@ -110,12 +117,13 @@ function JoinPage({ error, onJoin, onSignOut }: { error: string; onJoin: (code: 
   return <main className="center-page"><span className="brand">HowMuchAh<span className="brand-dot">.</span></span><form className="plain-card" onSubmit={(event) => { event.preventDefault(); onJoin(code.trim()); }}><p className="eyebrow">PRIVATE GROUP</p><h1>Join your badminton group</h1><p className="muted">Enter the invite code from an organiser. You won’t see group information until your request is approved.</p><label>Invite code<input value={code} onChange={(event) => setCode(event.target.value)} autoComplete="off" required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary-button" disabled={!code.trim()}>Request access</button><button type="button" className="text-button signout-link" onClick={onSignOut}>Sign out</button></form></main>;
 }
 
-function HomePage({ session, sessionReady, member, attendance, ledger, currency, fee, paymentStatuses, onCheckIn }: {
+function HomePage({ session, sessionReady, member, attendance, ledger, currency, fee, paymentStatuses, onCheckIn, onNickname }: {
   session: SessionInfo | null; sessionReady: boolean; member: Member;
   attendance: Attendance[]; ledger: ReturnType<typeof calculateLedger>; currency?: string;
   fee?: Fee;
   paymentStatuses: PaymentStatus[];
   onCheckIn: (undo: boolean) => Promise<void>;
+  onNickname: (nickname: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const mineAsPlayer = attendance.some((entry) => entry.playerUid === member.id && entry.status === "active");
@@ -149,7 +157,19 @@ function HomePage({ session, sessionReady, member, attendance, ledger, currency,
       <p className="privacy-note">Attendance and monthly payment status are shared with the group. Fee amounts are private.</p>
     </section>
     <section className="plain-card month-card"><div className="section-heading"><div><p className="eyebrow">THIS MONTH</p><h2>Payment status</h2></div></div>{paymentStatuses.map((person) => <div className="player-row" key={person.id}><span>{person.displayName}{person.isGuest && <small className="muted"> guest</small>}</span><span className="row-note">{person.paymentStatus === "none" ? "No bill" : person.paymentStatus === "paid" ? "Paid" : "Unpaid"}</span></div>)}</section>
+    <NicknameForm current={member.displayName} onSave={onNickname} />
   </div>;
+}
+
+function NicknameForm({ current, onSave }: { current: string; onSave: (nickname: string) => Promise<void> }) {
+  const [nickname, setNickname] = useState(current);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setNickname(current), [current]);
+  return <form className="plain-card month-card" onSubmit={async (event) => { event.preventDefault(); const value = nickname.trim(); if (!value || value === current) return; setBusy(true); try { await onSave(value); } finally { setBusy(false); } }}>
+    <p className="eyebrow">YOUR PROFILE</p><h2>Group nickname</h2><p className="muted">This is the name other players see. Your Google account name stays unchanged.</p>
+    <label>Nickname<input value={nickname} onChange={(event) => setNickname(event.target.value)} maxLength={80} required /></label>
+    <button className="secondary-button" disabled={busy || !nickname.trim() || nickname.trim() === current}>{busy ? "Saving…" : "Save nickname"}</button>
+  </form>;
 }
 
 function BillPage({ ledger, currency, payments, reversals, qr }: { ledger: ReturnType<typeof calculateLedger>; currency?: string; payments: Payment[]; reversals: Reversal[]; qr?: string }) {

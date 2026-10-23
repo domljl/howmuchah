@@ -12,6 +12,30 @@ function pool(rowsFor: (sql: string) => unknown[] = () => []) {
 }
 
 describe("API access boundary", () => {
+  it("lets a player update only their own validated group nickname", async () => {
+    const sql: Array<{ statement: string; values?: unknown[] }> = [];
+    const mockPool = {
+      query: async () => ({ rows: [] }),
+      connect: async () => ({
+        query: async (statement: string, values?: unknown[]) => {
+          sql.push({ statement, values });
+          return { rows: [], rowCount: statement.startsWith("UPDATE members") ? 1 : 0 };
+        },
+        release() {},
+      }),
+    } as unknown as Pool;
+    const app = await createApp({ pool: mockPool, verify: async () => ({ sub: "player-1" }) });
+    apps.push(app);
+    const headers = { authorization: "Bearer valid" };
+    const response = await app.inject({ method: "POST", url: "/api/actions/updateMyNickname", headers, payload: { nickname: "Rally" } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ nickname: "Rally" });
+    expect(sql.find(({ statement }) => statement.startsWith("UPDATE members"))?.values).toEqual(["player-1", "Rally"]);
+
+    const invalid = await app.inject({ method: "POST", url: "/api/actions/updateMyNickname", headers, payload: { nickname: "  " } });
+    expect(invalid.statusCode).toBe(400);
+  });
+
   it("keeps health public and requires sign-in for app data", async () => {
     const app = await createApp({ pool: pool(), env: { APP_ORIGINS: "http://localhost:5173" } });
     apps.push(app);

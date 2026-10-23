@@ -314,6 +314,13 @@ export async function createApp(deps: Dependencies = {}): Promise<FastifyInstanc
         return { status: "pending" };
       });
     },
+    updateMyNickname: async (actor, data) => transaction(pool, async (client) => {
+      const nickname = text(data.nickname, "nickname", 80);
+      const player = await client.query("UPDATE members SET display_name = $2 WHERE uid = $1 AND status IN ('pending', 'approved') AND removed_at IS NULL RETURNING uid", [actor.uid, nickname]);
+      if (!player.rowCount) fail(404, "Your active group profile was not found.");
+      await audit(client, "nickname-updated", actor, actor.uid);
+      return { nickname };
+    }),
     approveMember: async (actor, data) => transaction(pool, async (client) => {
       await isOrganizer(actor, client); const uid = text(data.playerUid, "player", 128); const fee = amount(data.amountMinor);
       const settings = await settingsRow(client); const timeZone = settingsZone(settings); settingsCurrency(settings);
