@@ -278,7 +278,7 @@ export async function createApp(deps: Dependencies = {}): Promise<FastifyInstanc
     }),
     createInvite: async (actor, _data) => transaction(pool, async (client) => {
       await isOrganizer(actor, client);
-      const code = randomBytes(24).toString("base64url"); const expiresAt = new Date(now().getTime() + 7 * 24 * 60 * 60 * 1000);
+      const code = randomBytes(6).toString("base64url").slice(0, 6); const expiresAt = new Date(now().getTime() + 7 * 24 * 60 * 60 * 1000);
       await client.query("INSERT INTO invites (token_hash, remaining_uses, created_by, expires_at) VALUES ($1, 20, $2, $3)", [createHash("sha256").update(code).digest("hex"), actor.uid, expiresAt]);
       return { code, expiresAt: expiresAt.toISOString() };
     }),

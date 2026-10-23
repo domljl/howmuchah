@@ -19,6 +19,24 @@ describe("API access boundary", () => {
     expect((await app.inject({ method: "GET", url: "/api/bootstrap" })).statusCode).toBe(401);
   });
 
+  it("creates six-character invite codes for organisers", async () => {
+    const owner = { uid: "owner-1", role: "owner", status: "approved" };
+    const mockPool = {
+      query: async () => ({ rows: [] }),
+      connect: async () => ({
+        query: async (statement: string) => ({ rows: statement === "SELECT * FROM members WHERE uid = $1" ? [owner] : [] }),
+        release() {},
+      }),
+    } as unknown as Pool;
+    const app = await createApp({ pool: mockPool, verify: async () => ({ sub: "owner-1" }) });
+    apps.push(app);
+
+    const response = await app.inject({ method: "POST", url: "/api/actions/createInvite", headers: { authorization: "Bearer valid" }, payload: {} });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().code).toMatch(/^[A-Za-z0-9_-]{6}$/);
+  });
+
   it("reports unavailable when PostgreSQL cannot be reached", async () => {
     const unavailablePool = { query: async () => { throw new Error("connection refused"); } } as unknown as Pool;
     const app = await createApp({ pool: unavailablePool });
