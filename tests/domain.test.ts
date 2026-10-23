@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateLedger, getSessionWindow, monthlyDueMinor, nextFeeEffectiveSessionDate } from "../functions/src/domain.js";
+import { calculateLedger, getSessionWindow, monthlyDueMinor, nextFeeEffectiveSessionDate } from "../shared/domain.js";
 
 const instant = (value: string) => new Date(value);
 

@@ -140,7 +140,7 @@ Primary buttons use the magenta accent with high-contrast text and a full-width 
 ## Do's and Don'ts
 
 - Keep check-in first for players and organisers.
-- Show another player's attendance without exposing their fee, payments, or balance.
+- Show group attendance and current-month paid/unpaid status without exposing another player's fee, payment history, or balance.
 - Use magenta for the main action and green for confirmed attendance.
 - Keep keyboard focus visible and motion reduced when the user requests it.
 - Do not add decorative icons made from Unicode glyphs; use the established inline SVG icon style.

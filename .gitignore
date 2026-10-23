@@ -36,6 +36,7 @@ emulator-data/
 # Generated dependencies and build/test output
 node_modules/
 dist/
+api-dist/
 coverage/
 test-results/
 playwright-report/

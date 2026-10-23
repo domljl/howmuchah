@@ -8,7 +8,7 @@ web
 
 ## Stack
 
-Delegated: React, TypeScript, and Vite with Firebase Authentication, Firestore, and Firebase Hosting, selected for Google sign-in, persistent shared records, and low operating cost.
+Stack: React, TypeScript, and Vite for a static Netlify frontend; Clerk Google sign-in; a small Fastify API on the existing VPS; Filess PostgreSQL for persistent shared records.
 
 ## Users
 
@@ -20,7 +20,7 @@ Keep weekly attendance and shuttlecock contributions accurate for one school bad
 
 ## Positioning
 
-Attendance is shared with the group; each player's fee and payment history stays private to that player and organisers. Personal per-session fees make the monthly amount traceable to the sessions attended.
+Attendance and each player's current-month paid/unpaid status are shared with the group. Fee amounts, balances, and payment history stay private to that player and organisers. Personal per-session fees make the monthly amount traceable to the sessions attended.
 
 ## Operating Context
 
@@ -30,8 +30,9 @@ The group plays after school once per week. The court is free; members contribut
 
 - Google sign-in and an invite flow; organisers approve new players and assign their fee before they see group information.
 - Each player can have a different fixed fee for each attended session. Fee changes apply to future sessions; existing charges stay at their original amount.
-- Players see the attendance list and their own monthly balance, charges, and payments. Only organisers see every player's financial details.
+- Players see group attendance, each player's monthly paid/unpaid status, and their own monthly balance, charges, and payments. Only organisers see every player's detailed financial records.
 - Organisers record partial payments, apply payments to older charges first, and carry excess forward as credit.
+- Players can see who is paid, unpaid, or has no bill for the current month. Organisers manually record payments and provide the group's PayNow QR code; payments are never verified automatically.
 - Organisers can add guests, set their fee, enter attendance and payments, and link their record if they later sign in.
 - Start each player at zero; no historical import. No bank integration or automatic payment verification.
 - Use trusted time for the check-in window. Preserve payment and attendance history when correcting records.

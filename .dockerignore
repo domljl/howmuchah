@@ -1,0 +1,10 @@
+.env*
+.git/
+.firebaserc
+node_modules/
+dist/
+api-dist/
+coverage/
+test-results/
+playwright-report/
+*.log
